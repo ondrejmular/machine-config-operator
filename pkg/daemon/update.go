@@ -283,25 +283,29 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 	}
 
 	dn.logSystem("Starting update from %s to %s: %+v", oldConfigName, newConfigName, diff)
+	rebootRequired := diff.osUpdate || diff.kargs || diff.fips || diff.kernelType
 
 	if err := dn.drain(); err != nil {
 		return err
 	}
 
 	// update files on disk that need updating
-	if err := dn.updateFiles(oldConfig, newConfig); err != nil {
+	filesRebootRequired, postUpdateActions, err := dn.updateFiles(oldConfig, newConfig)
+	if err != nil {
 		return err
 	}
+	rebootRequired = rebootRequired || filesRebootRequired
 
 	defer func() {
 		if retErr != nil {
-			if err := dn.updateFiles(newConfig, oldConfig); err != nil {
+			if _, _, err := dn.updateFiles(newConfig, oldConfig); err != nil {
 				retErr = errors.Wrapf(retErr, "error rolling back files writes %v", err)
 				return
 			}
 		}
 	}()
 
+	// SSH key never reuire reboot
 	if err := dn.updateSSHKeys(newConfig.Spec.Config.Passwd.Users); err != nil {
 		return err
 	}
@@ -354,7 +358,19 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 		}
 	}()
 
-	return dn.updateOSAndReboot(newConfig)
+	if err := dn.updateOS(newConfig); err != nil {
+		return err
+	}
+	if rebootRequired {
+		return dn.finalizeAndReboot(newConfig)
+	} else {
+		for _, postAction := range postUpdateActions {
+			if err := postAction.Run(); err != nil {
+				return dn.finalizeAndReboot(newConfig)
+			}
+		}
+	}
+	return nil
 }
 
 // MachineConfigDiff represents an ad-hoc difference between two MachineConfig objects.
@@ -763,19 +779,23 @@ func (dn *Daemon) switchKernel(oldConfig, newConfig *mcfgv1.MachineConfig) error
 // whatever has been written is picked up by the appropriate daemons, if
 // required. in particular, a daemon-reload and restart for any unit files
 // touched.
-func (dn *Daemon) updateFiles(oldConfig, newConfig *mcfgv1.MachineConfig) error {
+func (dn *Daemon) updateFiles(oldConfig, newConfig *mcfgv1.MachineConfig) (rebootRequired bool, postUpdateActions []PostUpdateAction, err error) {
+	// TODO: properly implement reboot required
 	glog.Info("Updating files")
 
-	if err := dn.writeFiles(newConfig.Spec.Config.Storage.Files); err != nil {
-		return err
+	rebootRequired, postUpdateActions, err = dn.writeFiles(newConfig.Spec.Config.Storage.Files)
+	if err != nil {
+		return true, nil, err
 	}
+	// TODO: handle units
 	if err := dn.writeUnits(newConfig.Spec.Config.Systemd.Units); err != nil {
-		return err
+		return true, nil, err
 	}
-	if err := dn.deleteStaleData(oldConfig, newConfig); err != nil {
-		return err
+	if err = dn.deleteStaleData(oldConfig, newConfig); err != nil {
+		// TODO: if deelting files, force reboot
+		return true, nil, err
 	}
-	return nil
+	return
 }
 
 // deleteStaleData performs a diff of the new and the old config. It then deletes
@@ -970,13 +990,18 @@ func (dn *Daemon) writeUnits(units []igntypes.Unit) error {
 
 // writeFiles writes the given files to disk.
 // it doesn't fetch remote files and expects a flattened config file.
-func (dn *Daemon) writeFiles(files []igntypes.File) error {
+func (dn *Daemon) writeFiles(files []igntypes.File) (rebootRequired bool, postUpdateActions []PostUpdateAction, err error) {
+	postUpdateActions = make([]PostUpdateAction, len(files))
+	rebootRequired = false
+	var contents *dataurl.DataURL
+	var fileNeedsReboot bool
+	var filePostUpdateAction PostUpdateAction
 	for _, file := range files {
 		glog.Infof("Writing file %q", file.Path)
 
-		contents, err := dataurl.DecodeString(file.Contents.Source)
+		contents, err = dataurl.DecodeString(file.Contents.Source)
 		if err != nil {
-			return err
+			return
 		}
 		mode := defaultFilePermissions
 		if file.Mode != nil {
@@ -989,17 +1014,26 @@ func (dn *Daemon) writeFiles(files []igntypes.File) error {
 		if file.User != nil || file.Group != nil {
 			uid, gid, err = getFileOwnership(file)
 			if err != nil {
-				return fmt.Errorf("failed to retrieve file ownership for file %q: %v", file.Path, err)
+				err = fmt.Errorf("failed to retrieve file ownership for file %q: %v", file.Path, err)
+				return
 			}
 		}
-		if err := createOrigFile(file.Path); err != nil {
-			return err
+		if err = createOrigFile(file.Path); err != nil {
+			return
 		}
-		if err := writeFileAtomically(file.Path, contents.Data, defaultDirectoryPermissions, mode, uid, gid); err != nil {
-			return err
+		if err = writeFileAtomically(file.Path, contents.Data, defaultDirectoryPermissions, mode, uid, gid); err != nil {
+			return
 		}
+		fileNeedsReboot, filePostUpdateAction, err = FilterConfig.GetAction(file)
+		if err != nil {
+			return
+		}
+		if filePostUpdateAction != nil {
+			postUpdateActions = append(postUpdateActions, filePostUpdateAction)
+		}
+		rebootRequired = rebootRequired || fileNeedsReboot
 	}
-	return nil
+	return
 }
 
 func origParentDir() string {
