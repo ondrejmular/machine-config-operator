@@ -1,113 +1,43 @@
 package daemon
 
 import (
-	"fmt"
 	"path/filepath"
 
 	igntypes "github.com/coreos/ignition/config/v2_2/types"
+	"github.com/deckarep/golang-set"
 )
 
-type FilterAction string
-
-type ActionType string
-
-const (
-	NoneAction      FilterAction = "none"
-	SystemctlAction FilterAction = "systemctl"
-	BinaryAction    FilterAction = "binary"
-	RebootAction    FilterAction = "reboot"
-)
-
-type ActionFilterEntry struct {
-	File   string
-	Path   string
-	Action FilterAction
-	Drain  bool
-	Args   []string
+type FileFilterEntry struct {
+	Glob             string
+	PostUpdateAction PostUpdateAction
+	Drain            bool
 }
 
-func (afe *ActionFilterEntry) getPostAction(filePath string) (PostUpdateAction, error) {
-	if afe.Action == BinaryAction {
-		if len(afe.Args) == 0 {
-			return nil, fmt.Errorf("Empty argument list")
-		}
-		return RunBinaryAction{
-			binary:     afe.Args[0],
-			args:       afe.Args[1:],
-			expectedRc: 0,
-		}, nil
-	}
-	if afe.Action == SystemctlAction {
-		// TODO: properly hanlde all possible cases
-		serviceName := filepath.Base(filePath)
-		serviceAction := "_reload_"
-		if len(afe.Args) == 1 {
-			serviceAction = afe.Args[0]
-		} else if len(afe.Args) == 2 {
-			serviceAction = afe.Args[0]
-			serviceName = afe.Args[1]
-		} else if len(afe.Args) != 0 {
-			// TODO: proper error
-			return nil, fmt.Errorf("")
-		}
-		return RunSystemctlAction{
-			serviceName,
-			serviceAction,
-		}, nil
-	}
-	// Noop action
-	return nil, nil
+type AvoidRebootConfig struct {
+	// Files filter which do not require
+	Files []*FileFilterEntry
+	// List of systemd unit that do not require system reboot, but rather just unit restart
+	Units []string
 }
 
-type FileFilterConfig struct {
-	entries []*ActionFilterEntry
-}
-
-func (ffc *FileFilterConfig) GetAction(file igntypes.File) (needReboot bool, action PostUpdateAction, err error) {
-	needReboot = true
-	action = nil
-	err = nil
-	var matched bool
-	for _, entry := range ffc.entries {
-		matched, err = filepath.Match(filepath.Join(entry.Path, entry.File), file.Path)
+func (config *AvoidRebootConfig) GetAction(file igntypes.File) PostUpdateAction {
+	for _, entry := range config.Files {
+		matched, err := filepath.Match(entry.Glob, file.Path)
 		if err != nil {
-			return
+			// TODO: log
+			continue
 		}
 		if matched {
-			if entry.Action == RebootAction {
-				return
-			}
-			action, err = entry.getPostAction(file.Path)
-			if err == nil {
-				needReboot = false
-			}
-			return
+			return entry.PostUpdateAction
 		}
 	}
-	return true, nil, nil
-}
-
-var FilterConfig FileFilterConfig = FileFilterConfig{
-	entries: []*ActionFilterEntry{
-		&ActionFilterEntry{
-			File:   "*.service",
-			Path:   "/etc/systemd/system/",
-			Action: SystemctlAction,
-			Drain:  false,
-			Args:   []string{"_restart_"},
-		},
-		&ActionFilterEntry{
-			File:   "*",
-			Path:   "/var/home/core/.ssh/",
-			Action: NoneAction,
-			Drain:  false,
-			Args:   []string{},
-		},
-	},
+	return nil
 }
 
 type PostUpdateAction interface {
 	Run() error
+	// TODO: add dbus connection setup
+	// SetDbusConnection()
 }
 
 type RunBinaryAction struct {
@@ -116,18 +46,90 @@ type RunBinaryAction struct {
 	expectedRc int
 }
 
-func (rba RunBinaryAction) Run() error {
+func (action RunBinaryAction) Run() error {
 	// TODO: implement
 	return nil
 }
 
+type UnitOperation string
+
+const (
+	unitRestart UnitOperation = "restart"
+	unitReload  UnitOperation = "reload"
+)
+
 type RunSystemctlAction struct {
-	serviceName   string
-	serviceAction string
+	unitName  string
+	operation UnitOperation
+	// TODO: add systemd dbus connection
 }
 
-func (rsa RunSystemctlAction) Run() error {
+func (action RunSystemctlAction) Run() error {
 	// TODO: implement
 	// https://godoc.org/github.com/coreos/go-systemd/dbus
 	return nil
+}
+
+type NoOpAction struct {
+}
+
+func (action NoOpAction) Run() error {
+	return nil
+}
+
+var FilterConfig AvoidRebootConfig = AvoidRebootConfig{
+	Files: []*FileFilterEntry{
+		&FileFilterEntry{
+			Glob: "/etc/kubernetes/kubelet.conf",
+			PostUpdateAction: RunSystemctlAction{
+				unitName:  "kubelet.service",
+				operation: unitReload,
+			},
+			Drain: false,
+		},
+	},
+	Units: []string{"chronyd.service", "sshd.service"},
+}
+
+type FileChangeType string
+
+const (
+	fileCreated FileChangeType = "created"
+	fileDeleted FileChangeType = "deleted"
+	fileUpdated FileChangeType = "updated"
+)
+
+type FileChanged struct {
+	file       string
+	changeType FileChangeType
+}
+
+func getFileNames(files []igntypes.File) []interface{} {
+	names := make([]interface{}, len(files))
+	for _, file := range files {
+		names = append(names, file.Path)
+	}
+	return names
+}
+
+func getFilesDiff(oldFilesConfig, newFilesConfig []igntypes.File) []*FileChanged {
+	oldFiles := mapset.NewSetFromSlice(getFileNames(oldFilesConfig))
+	newFiles := mapset.NewSetFromSlice(getFileNames(newFilesConfig))
+	changes := make([]*FileChanged, newFiles.Cardinality())
+	for created := range oldFiles.Difference(newFiles).Iter() {
+		changes = append(changes, &FileChanged{
+			file:       created.(string),
+			changeType: fileCreated,
+		})
+	}
+	for deleted := range newFiles.Difference(oldFiles).Iter() {
+		changes = append(changes, &FileChanged{
+			file:       deleted.(string),
+			changeType: fileDeleted,
+		})
+	}
+	// for changeCandidate := range newFiles.Intersect(oldFiles).Iter() {
+	//
+	// }
+	return changes
 }
