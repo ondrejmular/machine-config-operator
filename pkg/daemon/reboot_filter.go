@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"path/filepath"
 
 	igntypes "github.com/coreos/ignition/config/v2_2/types"
@@ -77,7 +78,7 @@ func (action NoOpAction) Run() error {
 	return nil
 }
 
-var FilterConfig AvoidRebootConfig = AvoidRebootConfig{
+var FilterConfig = AvoidRebootConfig{
 	Files: []*FileFilterEntry{
 		&FileFilterEntry{
 			Glob: "/etc/kubernetes/kubelet.conf",
@@ -100,7 +101,8 @@ const (
 )
 
 type FileChanged struct {
-	file       string
+	name       string
+	file       igntypes.File
 	changeType FileChangeType
 }
 
@@ -112,24 +114,66 @@ func getFileNames(files []igntypes.File) []interface{} {
 	return names
 }
 
-func getFilesDiff(oldFilesConfig, newFilesConfig []igntypes.File) []*FileChanged {
+func convertFiles(files []igntypes.File) map[string]igntypes.File {
+	fileMap := make(map[string]igntypes.File, len(files))
+	for _, file := range files {
+		fileMap[file.Path] = file
+	}
+	return fileMap
+}
+
+func GetFilesDiff(oldFilesConfig, newFilesConfig []igntypes.File) ([]*FileChanged, error) {
 	oldFiles := mapset.NewSetFromSlice(getFileNames(oldFilesConfig))
+	oldFilesMap := convertFiles(oldFilesConfig)
 	newFiles := mapset.NewSetFromSlice(getFileNames(newFilesConfig))
+	newFilesMap := convertFiles(newFilesConfig)
 	changes := make([]*FileChanged, newFiles.Cardinality())
+	var ok bool
+	var oldFile igntypes.File
+	var newFile igntypes.File
 	for created := range oldFiles.Difference(newFiles).Iter() {
+		newFile, ok = newFilesMap[created.(string)]
+		if !ok {
+			// TODO: proper errro message, assertion
+			return nil, fmt.Errorf("ERROR")
+		}
 		changes = append(changes, &FileChanged{
-			file:       created.(string),
+			name:       created.(string),
+			file:       newFile,
 			changeType: fileCreated,
 		})
 	}
 	for deleted := range newFiles.Difference(oldFiles).Iter() {
+		oldFile, ok = oldFilesMap[deleted.(string)]
+		if !ok {
+			// TODO: proper error message, assertion
+			return nil, fmt.Errorf("ERROR")
+		}
 		changes = append(changes, &FileChanged{
-			file:       deleted.(string),
+			name:       deleted.(string),
+			file:       oldFile,
 			changeType: fileDeleted,
 		})
 	}
-	// for changeCandidate := range newFiles.Intersect(oldFiles).Iter() {
-	//
-	// }
-	return changes
+	for changeCandidate := range newFiles.Intersect(oldFiles).Iter() {
+		// TODO: check agains what is on a filesystem
+		oldFile, ok = oldFilesMap[changeCandidate.(string)]
+		if !ok {
+			// TODO: proper errro message, assertion
+			return nil, fmt.Errorf("ERROR")
+		}
+		newFile, ok = newFilesMap[changeCandidate.(string)]
+		if !ok {
+			// TODO: proper errro message, assertion
+			return nil, fmt.Errorf("ERROR")
+		}
+		if newFile.Contents.Source != oldFile.Contents.Source {
+			changes = append(changes, &FileChanged{
+				name:       changeCandidate.(string),
+				file:       newFile,
+				changeType: fileUpdated,
+			})
+		}
+	}
+	return changes, nil
 }
