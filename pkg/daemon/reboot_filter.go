@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"fmt"
 	"path/filepath"
 
 	igntypes "github.com/coreos/ignition/config/v2_2/types"
@@ -21,9 +20,9 @@ type AvoidRebootConfig struct {
 	Units []string
 }
 
-func (config *AvoidRebootConfig) GetAction(file igntypes.File) PostUpdateAction {
+func (config *AvoidRebootConfig) GetAction(filePath string) PostUpdateAction {
 	for _, entry := range config.Files {
-		matched, err := filepath.Match(entry.Glob, file.Path)
+		matched, err := filepath.Match(entry.Glob, filePath)
 		if err != nil {
 			// TODO: log
 			continue
@@ -114,7 +113,7 @@ func getFileNames(files []igntypes.File) []interface{} {
 	return names
 }
 
-func convertFiles(files []igntypes.File) map[string]igntypes.File {
+func filesToMap(files []igntypes.File) map[string]igntypes.File {
 	fileMap := make(map[string]igntypes.File, len(files))
 	for _, file := range files {
 		fileMap[file.Path] = file
@@ -122,11 +121,11 @@ func convertFiles(files []igntypes.File) map[string]igntypes.File {
 	return fileMap
 }
 
-func GetFilesDiff(oldFilesConfig, newFilesConfig []igntypes.File) ([]*FileChanged, error) {
+func getFilesDiff(oldFilesConfig, newFilesConfig []igntypes.File) ([]*FileChanged, error) {
 	oldFiles := mapset.NewSetFromSlice(getFileNames(oldFilesConfig))
-	oldFilesMap := convertFiles(oldFilesConfig)
+	oldFilesMap := filesToMap(oldFilesConfig)
 	newFiles := mapset.NewSetFromSlice(getFileNames(newFilesConfig))
-	newFilesMap := convertFiles(newFilesConfig)
+	newFilesMap := filesToMap(newFilesConfig)
 	changes := make([]*FileChanged, newFiles.Cardinality())
 	for created := range oldFiles.Difference(newFiles).Iter() {
 		changes = append(changes, &FileChanged{
@@ -153,4 +152,47 @@ func GetFilesDiff(oldFilesConfig, newFilesConfig []igntypes.File) ([]*FileChange
 		}
 	}
 	return changes, nil
+}
+
+func handleFileChanges(changes []*FileChanged) (err error) {
+	for _, change := range changes {
+		switch change.changeType {
+		case fileCreated:
+			fallthrough
+		case fileUpdated:
+			err = writeFile(change.file)
+		case fileDeleted:
+			err = deleteFile(change.name)
+		default:
+			err = nil
+		}
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
+func runPostActions(changes []*FileChanged) bool {
+	actions := make([]PostUpdateAction, len(changes))
+	for _, change := range changes {
+		switch change.changeType {
+		case fileUpdated:
+			action := FilterConfig.GetAction(change.name)
+			if action != nil {
+				return true
+			}
+			actions = append(actions, action)
+		default:
+			return true
+		}
+	}
+
+	for _, action := range actions {
+		if err := action.Run(); err != nil {
+			// TODO: log
+			return true
+		}
+	}
+	return false
 }

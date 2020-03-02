@@ -283,22 +283,40 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 	}
 
 	dn.logSystem("Starting update from %s to %s: %+v", oldConfigName, newConfigName, diff)
-	rebootRequired := diff.osUpdate || diff.kargs || diff.fips || diff.kernelType
+	rebootRequired := diff.osUpdate || diff.kargs || diff.fips || diff.kernelType || diff.units
 
 	if err := dn.drain(); err != nil {
 		return err
 	}
 
 	// update files on disk that need updating
-	filesRebootRequired, postUpdateActions, err := dn.updateFiles(oldConfig, newConfig)
-	if err != nil {
+	if err := dn.updateUnits(oldConfig, newConfig); err != nil {
 		return err
 	}
-	rebootRequired = rebootRequired || filesRebootRequired
 
 	defer func() {
 		if retErr != nil {
-			if _, _, err := dn.updateFiles(newConfig, oldConfig); err != nil {
+			if err := dn.updateUnits(newConfig, oldConfig); err != nil {
+				retErr = errors.Wrapf(retErr, "error rolling back units writes %v", err)
+				return
+			}
+		}
+	}()
+
+	filesChanges, err := getFilesDiff(
+		oldConfig.Spec.Config.Storage.Files,
+		newConfig.Spec.Config.Storage.Files,
+	)
+	if err != nil {
+		return err
+	}
+
+	if err := handleFileChanges(filesChanges); err != nil {
+		return err
+	}
+	defer func() {
+		if retErr != nil {
+			if err := dn.writeFiles(oldConfig.Spec.Config.Storage.Files); err != nil {
 				retErr = errors.Wrapf(retErr, "error rolling back files writes %v", err)
 				return
 			}
@@ -361,14 +379,8 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 	if err := dn.updateOS(newConfig); err != nil {
 		return err
 	}
-	if rebootRequired {
+	if rebootRequired || runPostActions(filesChanges) {
 		return dn.finalizeAndReboot(newConfig)
-	} else {
-		for _, postAction := range postUpdateActions {
-			if err := postAction.Run(); err != nil {
-				return dn.finalizeAndReboot(newConfig)
-			}
-		}
 	}
 	return nil
 }
@@ -762,6 +774,7 @@ func (dn *Daemon) switchKernel(oldConfig, newConfig *mcfgv1.MachineConfig) error
 	return nil
 }
 
+// TODO: update comment
 // updateFiles writes files specified by the nodeconfig to disk. it also writes
 // systemd units. there is no support for multiple filesystems at this point.
 //
@@ -779,58 +792,46 @@ func (dn *Daemon) switchKernel(oldConfig, newConfig *mcfgv1.MachineConfig) error
 // whatever has been written is picked up by the appropriate daemons, if
 // required. in particular, a daemon-reload and restart for any unit files
 // touched.
-func (dn *Daemon) updateFiles(oldConfig, newConfig *mcfgv1.MachineConfig) (rebootRequired bool, postUpdateActions []PostUpdateAction, err error) {
-	// TODO: properly implement reboot required
-	glog.Info("Updating files")
-
-	rebootRequired, postUpdateActions, err = dn.writeFiles(newConfig.Spec.Config.Storage.Files)
-	if err != nil {
-		return true, nil, err
-	}
-	// TODO: handle units
+func (dn *Daemon) updateUnits(oldConfig, newConfig *mcfgv1.MachineConfig) error {
+	glog.Info("Updating units")
+	// TODO: avoid reboots for units
 	if err := dn.writeUnits(newConfig.Spec.Config.Systemd.Units); err != nil {
-		return true, nil, err
+		return err
 	}
-	if err = dn.deleteStaleData(oldConfig, newConfig); err != nil {
-		// TODO: if deelting files, force reboot
-		return true, nil, err
+	if err := dn.deleteStaleUnits(oldConfig, newConfig); err != nil {
+		return err
 	}
-	return
+	return nil
 }
 
+func deleteFile(filePath string) error {
+	if _, err := os.Stat(origFileName(filePath)); err == nil {
+		if err := os.Rename(origFileName(filePath), filePath); err != nil {
+			return err
+		}
+		glog.V(2).Infof("Restored file %q", filePath)
+	} else {
+		glog.V(2).Infof("Deleting stale config file: %s", filePath)
+		if err := os.Remove(filePath); err != nil {
+			newErr := fmt.Errorf("unable to delete %s: %s", filePath, err)
+			if !os.IsNotExist(err) {
+				return newErr
+			}
+			// otherwise, just warn
+			glog.Warningf("%v", newErr)
+		}
+		glog.Infof("Removed stale file %q", filePath)
+	}
+	return nil
+}
+
+// TODO: update comment
 // deleteStaleData performs a diff of the new and the old config. It then deletes
 // all the files, units that are present in the old config but not in the new one.
 // this function will error out if it fails to delete a file (with the exception
 // of simply warning if the error is ENOENT since that's the desired state).
-func (dn *Daemon) deleteStaleData(oldConfig, newConfig *mcfgv1.MachineConfig) error {
-	glog.Info("Deleting stale data")
-	newFileSet := make(map[string]struct{})
-	for _, f := range newConfig.Spec.Config.Storage.Files {
-		newFileSet[f.Path] = struct{}{}
-	}
-
-	for _, f := range oldConfig.Spec.Config.Storage.Files {
-		if _, ok := newFileSet[f.Path]; !ok {
-			if _, err := os.Stat(origFileName(f.Path)); err == nil {
-				if err := os.Rename(origFileName(f.Path), f.Path); err != nil {
-					return err
-				}
-				glog.V(2).Infof("Restored file %q", f.Path)
-				continue
-			}
-			glog.V(2).Infof("Deleting stale config file: %s", f.Path)
-			if err := os.Remove(f.Path); err != nil {
-				newErr := fmt.Errorf("unable to delete %s: %s", f.Path, err)
-				if !os.IsNotExist(err) {
-					return newErr
-				}
-				// otherwise, just warn
-				glog.Warningf("%v", newErr)
-			}
-			glog.Infof("Removed stale file %q", f.Path)
-		}
-	}
-
+func (dn *Daemon) deleteStaleUnits(oldConfig, newConfig *mcfgv1.MachineConfig) error {
+	glog.Info("Deleting stale units")
 	newUnitSet := make(map[string]struct{})
 	newDropinSet := make(map[string]struct{})
 	for _, u := range newConfig.Spec.Config.Systemd.Units {
@@ -990,50 +991,44 @@ func (dn *Daemon) writeUnits(units []igntypes.Unit) error {
 
 // writeFiles writes the given files to disk.
 // it doesn't fetch remote files and expects a flattened config file.
-func (dn *Daemon) writeFiles(files []igntypes.File) (rebootRequired bool, postUpdateActions []PostUpdateAction, err error) {
-	postUpdateActions = make([]PostUpdateAction, len(files))
-	rebootRequired = false
-	var contents *dataurl.DataURL
-	var fileNeedsReboot bool
-	var filePostUpdateAction PostUpdateAction
+func (dn *Daemon) writeFiles(files []igntypes.File) error {
 	for _, file := range files {
-		glog.Infof("Writing file %q", file.Path)
-
-		contents, err = dataurl.DecodeString(file.Contents.Source)
-		if err != nil {
-			return
+		if err := writeFile(file); err != nil {
+			return err
 		}
-		mode := defaultFilePermissions
-		if file.Mode != nil {
-			mode = os.FileMode(*file.Mode)
-		}
-		var (
-			uid, gid = -1, -1
-		)
-		// set chown if file information is provided
-		if file.User != nil || file.Group != nil {
-			uid, gid, err = getFileOwnership(file)
-			if err != nil {
-				err = fmt.Errorf("failed to retrieve file ownership for file %q: %v", file.Path, err)
-				return
-			}
-		}
-		if err = createOrigFile(file.Path); err != nil {
-			return
-		}
-		if err = writeFileAtomically(file.Path, contents.Data, defaultDirectoryPermissions, mode, uid, gid); err != nil {
-			return
-		}
-		fileNeedsReboot, filePostUpdateAction, err = FilterConfig.GetAction(file)
-		if err != nil {
-			return
-		}
-		if filePostUpdateAction != nil {
-			postUpdateActions = append(postUpdateActions, filePostUpdateAction)
-		}
-		rebootRequired = rebootRequired || fileNeedsReboot
 	}
-	return
+	return nil
+}
+
+func writeFile(file igntypes.File) error {
+	glog.Infof("Writing file %q", file.Path)
+
+	contents, err := dataurl.DecodeString(file.Contents.Source)
+	if err != nil {
+		return err
+	}
+	mode := defaultFilePermissions
+	if file.Mode != nil {
+		mode = os.FileMode(*file.Mode)
+	}
+	var (
+		uid, gid = -1, -1
+	)
+	// set chown if file information is provided
+	if file.User != nil || file.Group != nil {
+		uid, gid, err = getFileOwnership(file)
+		if err != nil {
+			err = fmt.Errorf("failed to retrieve file ownership for file %q: %v", file.Path, err)
+			return err
+		}
+	}
+	if err = createOrigFile(file.Path); err != nil {
+		return err
+	}
+	if err = writeFileAtomically(file.Path, contents.Data, defaultDirectoryPermissions, mode, uid, gid); err != nil {
+		return err
+	}
+	return nil
 }
 
 func origParentDir() string {
