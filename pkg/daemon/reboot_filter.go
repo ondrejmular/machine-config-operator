@@ -203,7 +203,7 @@ func runPostActions(changes []*FileChanged) bool {
 	return false
 }
 
-func getUnitNames(units []*igntypes.Unit) []interface{} {
+func getUnitNames(units []igntypes.Unit) []interface{} {
 	names := make([]interface{}, len(units))
 	for _, unit := range units {
 		names = append(names, unit.Name)
@@ -211,10 +211,10 @@ func getUnitNames(units []*igntypes.Unit) []interface{} {
 	return names
 }
 
-func unitsToMap(units []*igntypes.Unit) map[string]*igntypes.Unit {
+func unitsToMap(units []igntypes.Unit) map[string]*igntypes.Unit {
 	unitMap := make(map[string]*igntypes.Unit, len(units))
 	for _, unit := range units {
-		unitMap[unit.Name] = unit
+		unitMap[unit.Name] = &unit
 	}
 	return unitMap
 }
@@ -227,7 +227,7 @@ type UnitChanged struct {
 	changeType     FileChangeType
 }
 
-func getUnitsChanges(oldUnitsConfig, newUnitsConfig []*igntypes.Unit) []*UnitChanged {
+func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChanged {
 	oldUnits := mapset.NewSetFromSlice(getUnitNames(oldUnitsConfig))
 	oldUnitsMap := unitsToMap(oldUnitsConfig)
 	newUnits := mapset.NewSetFromSlice(getUnitNames(newUnitsConfig))

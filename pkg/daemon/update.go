@@ -289,14 +289,21 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 		return err
 	}
 
-	// update files on disk that need updating
-	if err := dn.updateUnits(oldConfig, newConfig); err != nil {
+	unitsChanges := getUnitsChanges(
+		oldConfig.Spec.Config.Systemd.Units,
+		newConfig.Spec.Config.Systemd.Units,
+	)
+
+	if err := handleUnitsChanges(unitsChanges); err != nil {
 		return err
 	}
 
 	defer func() {
 		if retErr != nil {
-			if err := dn.updateUnits(newConfig, oldConfig); err != nil {
+			if err := handleUnitsChanges(getUnitsChanges(
+				oldConfig.Spec.Config.Systemd.Units,
+				newConfig.Spec.Config.Systemd.Units,
+			)); err != nil {
 				retErr = errors.Wrapf(retErr, "error rolling back units writes %v", err)
 				return
 			}
@@ -771,36 +778,6 @@ func (dn *Daemon) switchKernel(oldConfig, newConfig *mcfgv1.MachineConfig) error
 	return nil
 }
 
-// TODO: update comment
-// updateFiles writes files specified by the nodeconfig to disk. it also writes
-// systemd units. there is no support for multiple filesystems at this point.
-//
-// in addition to files, we also write systemd units to disk. we mask, enable,
-// and disable unit files when appropriate. this function relies on the system
-// being restarted after an upgrade, so it doesn't daemon-reload or restart
-// any services.
-//
-// it is worth noting that this function explicitly doesn't rely on the ignition
-// implementation of file, unit writing, enabling or disabling. this is because
-// ignition is built on the assumption that it is working with a fresh system,
-// where as we are trying to reconcile a system that has already been running.
-//
-// in the future, this function should do any additional work to confirm that
-// whatever has been written is picked up by the appropriate daemons, if
-// required. in particular, a daemon-reload and restart for any unit files
-// touched.
-func (dn *Daemon) updateUnits(oldConfig, newConfig *mcfgv1.MachineConfig) error {
-	glog.Info("Updating units")
-	// TODO: avoid reboots for units
-	if err := dn.writeUnits(newConfig.Spec.Config.Systemd.Units); err != nil {
-		return err
-	}
-	if err := dn.deleteStaleUnits(oldConfig, newConfig); err != nil {
-		return err
-	}
-	return nil
-}
-
 func deleteFile(filePath string) error {
 	if _, err := os.Stat(origFileName(filePath)); err == nil {
 		if err := os.Rename(origFileName(filePath), filePath); err != nil {
@@ -822,61 +799,6 @@ func deleteFile(filePath string) error {
 	return nil
 }
 
-// TODO: update comment
-// deleteStaleData performs a diff of the new and the old config. It then deletes
-// all the files, units that are present in the old config but not in the new one.
-// this function will error out if it fails to delete a file (with the exception
-// of simply warning if the error is ENOENT since that's the desired state).
-func (dn *Daemon) deleteStaleUnits(oldConfig, newConfig *mcfgv1.MachineConfig) error {
-	glog.Info("Deleting stale units")
-	newUnitSet := make(map[string]struct{})
-	newDropinSet := make(map[string]struct{})
-	for _, u := range newConfig.Spec.Config.Systemd.Units {
-		for j := range u.Dropins {
-			path := filepath.Join(pathSystemd, u.Name+".d", u.Dropins[j].Name)
-			newDropinSet[path] = struct{}{}
-		}
-		path := filepath.Join(pathSystemd, u.Name)
-		newUnitSet[path] = struct{}{}
-	}
-
-	for _, u := range oldConfig.Spec.Config.Systemd.Units {
-		for j := range u.Dropins {
-			path := filepath.Join(pathSystemd, u.Name+".d", u.Dropins[j].Name)
-			if _, ok := newDropinSet[path]; !ok {
-				glog.V(2).Infof("Deleting stale systemd dropin file: %s", path)
-				if err := os.Remove(path); err != nil {
-					newErr := fmt.Errorf("unable to delete %s: %s", path, err)
-					if !os.IsNotExist(err) {
-						return newErr
-					}
-					// otherwise, just warn
-					glog.Warningf("%v", newErr)
-				}
-				glog.Infof("Removed stale systemd dropin %q", path)
-			}
-		}
-		path := filepath.Join(pathSystemd, u.Name)
-		if _, ok := newUnitSet[path]; !ok {
-			if err := disableUnit(u); err != nil {
-				glog.Warningf("Unable to disable %s: %s", u.Name, err)
-			}
-			glog.V(2).Infof("Deleting stale systemd unit file: %s", path)
-			if err := os.Remove(path); err != nil {
-				newErr := fmt.Errorf("unable to delete %s: %s", path, err)
-				if !os.IsNotExist(err) {
-					return newErr
-				}
-				// otherwise, just warn
-				glog.Warningf("%v", newErr)
-			}
-			glog.Infof("Removed stale systemd unit %q", path)
-		}
-	}
-
-	return nil
-}
-
 func deleteUnit(unit *igntypes.Unit) error {
 	for j := range unit.Dropins {
 		path := filepath.Join(pathSystemd, unit.Name+".d", unit.Dropins[j].Name)
@@ -892,9 +814,6 @@ func deleteUnit(unit *igntypes.Unit) error {
 		glog.Infof("Removed systemd dropin %q", path)
 	}
 	path := filepath.Join(pathSystemd, unit.Name)
-	// if err := disableUnit(*unit); err != nil {
-	// 	glog.Warningf("Unable to disable %s: %s", unit.Name, err)
-	// }
 	glog.V(2).Infof("Deleting systemd unit file: %s", path)
 	if err := os.Remove(path); err != nil {
 		newErr := fmt.Errorf("unable to delete %s: %s", path, err)
@@ -1011,81 +930,6 @@ func disableUnit(unit igntypes.Unit) error {
 	glog.V(2).Infof("Disabling unit at %s", wantsPath)
 
 	return os.Remove(wantsPath)
-}
-
-// writeUnits writes the systemd units to disk
-func (dn *Daemon) writeUnits(units []igntypes.Unit) error {
-	for _, u := range units {
-		// write the dropin to disk
-		for i := range u.Dropins {
-			glog.Infof("Writing systemd unit dropin %q", u.Dropins[i].Name)
-			dpath := filepath.Join(pathSystemd, u.Name+".d", u.Dropins[i].Name)
-			if err := writeFileAtomicallyWithDefaults(dpath, []byte(u.Dropins[i].Contents)); err != nil {
-				return fmt.Errorf("failed to write systemd unit dropin %q: %v", u.Dropins[i].Name, err)
-			}
-
-			glog.V(2).Infof("Wrote systemd unit dropin at %s", dpath)
-		}
-
-		fpath := filepath.Join(pathSystemd, u.Name)
-
-		// check if the unit is masked. if it is, we write a symlink to
-		// /dev/null and continue
-		if u.Mask {
-			glog.V(2).Info("Systemd unit masked")
-			if err := os.RemoveAll(fpath); err != nil {
-				return fmt.Errorf("failed to remove unit %q: %v", u.Name, err)
-			}
-			glog.V(2).Infof("Removed unit %q", u.Name)
-
-			if err := renameio.Symlink(pathDevNull, fpath); err != nil {
-				return fmt.Errorf("failed to symlink unit %q to %s: %v", u.Name, pathDevNull, err)
-			}
-			glog.V(2).Infof("Created symlink unit %q to %s", u.Name, pathDevNull)
-
-			continue
-		}
-
-		if u.Contents != "" {
-			glog.Infof("Writing systemd unit %q", u.Name)
-
-			// write the unit to disk
-			if err := writeFileAtomicallyWithDefaults(fpath, []byte(u.Contents)); err != nil {
-				return fmt.Errorf("failed to write systemd unit %q: %v", u.Name, err)
-			}
-
-			glog.V(2).Infof("Successfully wrote systemd unit %q: ", u.Name)
-		}
-
-		// if the unit doesn't note if it should be enabled or disabled then
-		// skip all linking.
-		// if the unit should be enabled, then enable it.
-		// otherwise the unit is disabled. run disableUnit to ensure the unit is
-		// disabled. even if the unit wasn't previously enabled the result will
-		// be fine as disableUnit is idempotent.
-		// Note: we have to check for legacy unit.Enable and honor it
-		glog.Infof("Enabling systemd unit %q", u.Name)
-		if u.Enable {
-			if err := enableUnit(u); err != nil {
-				return err
-			}
-			glog.V(2).Infof("Enabled systemd unit %q", u.Name)
-		}
-		if u.Enabled != nil {
-			if *u.Enabled {
-				if err := enableUnit(u); err != nil {
-					return err
-				}
-				glog.V(2).Infof("Enabled systemd unit %q", u.Name)
-			} else {
-				if err := disableUnit(u); err != nil {
-					return err
-				}
-				glog.V(2).Infof("Disabled systemd unit %q", u.Name)
-			}
-		}
-	}
-	return nil
 }
 
 // writeFiles writes the given files to disk.
