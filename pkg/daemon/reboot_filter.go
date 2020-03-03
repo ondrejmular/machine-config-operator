@@ -1,10 +1,12 @@
 package daemon
 
 import (
+	"os/exec"
 	"path/filepath"
 
 	igntypes "github.com/coreos/ignition/config/v2_2/types"
 	"github.com/deckarep/golang-set"
+	"github.com/golang/glog"
 )
 
 type FileFilterEntry struct {
@@ -41,13 +43,16 @@ type PostUpdateAction interface {
 }
 
 type RunBinaryAction struct {
-	binary     string
-	args       []string
-	expectedRc int
+	binary string
+	args   []string
 }
 
 func (action RunBinaryAction) Run() error {
-	// TODO: implement
+	output, err := exec.Command(action.binary, action.args...).CombinedOutput()
+	if err != nil {
+		glog.Errorf("Running post update action (running command: '%s %s') failed: %s; command output: %s", action.binary, action.args, err, output)
+		return err
+	}
 	return nil
 }
 
