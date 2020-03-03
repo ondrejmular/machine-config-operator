@@ -3,6 +3,7 @@ package daemon
 import (
 	"os/exec"
 	"path/filepath"
+	"reflect"
 
 	igntypes "github.com/coreos/ignition/config/v2_2/types"
 	"github.com/deckarep/golang-set"
@@ -126,7 +127,7 @@ func filesToMap(files []igntypes.File) map[string]igntypes.File {
 	return fileMap
 }
 
-func getFilesDiff(oldFilesConfig, newFilesConfig []igntypes.File) ([]*FileChanged, error) {
+func getFilesDiff(oldFilesConfig, newFilesConfig []igntypes.File) []*FileChanged {
 	oldFiles := mapset.NewSetFromSlice(getFileNames(oldFilesConfig))
 	oldFilesMap := filesToMap(oldFilesConfig)
 	newFiles := mapset.NewSetFromSlice(getFileNames(newFilesConfig))
@@ -148,7 +149,7 @@ func getFilesDiff(oldFilesConfig, newFilesConfig []igntypes.File) ([]*FileChange
 	}
 	for changeCandidate := range newFiles.Intersect(oldFiles).Iter() {
 		newFile := newFilesMap[changeCandidate.(string)]
-		if newFile.Contents.Source != oldFilesMap[changeCandidate.(string)].Contents.Source {
+		if !reflect.DeepEqual(newFile, oldFilesMap[changeCandidate.(string)]) {
 			changes = append(changes, &FileChanged{
 				name:       changeCandidate.(string),
 				file:       newFile,
@@ -156,7 +157,7 @@ func getFilesDiff(oldFilesConfig, newFilesConfig []igntypes.File) ([]*FileChange
 			})
 		}
 	}
-	return changes, nil
+	return changes
 }
 
 func handleFileChanges(changes []*FileChanged) (err error) {
@@ -200,4 +201,89 @@ func runPostActions(changes []*FileChanged) bool {
 		}
 	}
 	return false
+}
+
+func getUnitNames(units []*igntypes.Unit) []interface{} {
+	names := make([]interface{}, len(units))
+	for _, unit := range units {
+		names = append(names, unit.Name)
+	}
+	return names
+}
+
+func unitsToMap(units []*igntypes.Unit) map[string]*igntypes.Unit {
+	unitMap := make(map[string]*igntypes.Unit, len(units))
+	for _, unit := range units {
+		unitMap[unit.Name] = unit
+	}
+	return unitMap
+}
+
+type UnitChanged struct {
+	name           string
+	oldUnit        *igntypes.Unit
+	newUnit        *igntypes.Unit
+	deletedDropins []string
+	changeType     FileChangeType
+}
+
+func getUnitsChanges(oldUnitsConfig, newUnitsConfig []*igntypes.Unit) []*UnitChanged {
+	oldUnits := mapset.NewSetFromSlice(getUnitNames(oldUnitsConfig))
+	oldUnitsMap := unitsToMap(oldUnitsConfig)
+	newUnits := mapset.NewSetFromSlice(getUnitNames(newUnitsConfig))
+	newUnitsMap := unitsToMap(newUnitsConfig)
+	changes := make([]*UnitChanged, newUnits.Cardinality())
+	for created := range oldUnits.Difference(newUnits).Iter() {
+		changes = append(changes, &UnitChanged{
+			name:       created.(string),
+			newUnit:    newUnitsMap[created.(string)],
+			oldUnit:    nil,
+			changeType: fileCreated,
+		})
+	}
+	for deleted := range newUnits.Difference(oldUnits).Iter() {
+		changes = append(changes, &UnitChanged{
+			name:       deleted.(string),
+			newUnit:    nil,
+			oldUnit:    oldUnitsMap[deleted.(string)],
+			changeType: fileDeleted,
+		})
+	}
+	for changeCandidate := range newUnits.Intersect(oldUnits).Iter() {
+		newUnit := newUnitsMap[changeCandidate.(string)]
+		oldUnit := oldUnitsMap[changeCandidate.(string)]
+		if !reflect.DeepEqual(newUnit, oldUnit) {
+			changes = append(changes, &UnitChanged{
+				name:       changeCandidate.(string),
+				newUnit:    newUnit,
+				oldUnit:    oldUnit,
+				changeType: fileUpdated,
+			})
+		}
+	}
+	return changes
+}
+
+func handleUnitsChanges(changes []*UnitChanged) (err error) {
+	for _, change := range changes {
+		switch change.changeType {
+		case fileCreated:
+			err = createUnit(change.newUnit)
+		case fileUpdated:
+			err = deleteUnit(change.oldUnit)
+			if err != nil {
+				// TODO: try to write it back or do it in roll-back?
+				return
+			}
+			err = createUnit(change.newUnit)
+		case fileDeleted:
+			err = deleteUnit(change.oldUnit)
+		default:
+			err = nil
+		}
+		if err != nil {
+			return
+		}
+	}
+	return
 }

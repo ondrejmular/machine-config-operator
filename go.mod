@@ -20,6 +20,7 @@ require (
 	github.com/creack/pty v1.1.9 // indirect
 	github.com/cri-o/cri-o v1.16.2
 	github.com/davecgh/go-spew v1.1.1
+	github.com/deckarep/golang-set v1.7.1
 	github.com/elazarl/goproxy v0.0.0-20190911111923-ecfe977594f1 // indirect
 	github.com/emicklei/go-restful v2.10.0+incompatible // indirect
 	github.com/ghodss/yaml v1.0.0
