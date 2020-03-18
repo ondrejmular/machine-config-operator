@@ -1070,8 +1070,10 @@ func (dn *Daemon) runOnceFromIgnition(ignConfig igntypes.Config) error {
 	if err := dn.writeFiles(ignConfig.Storage.Files); err != nil {
 		return err
 	}
-	if err := dn.writeUnits(ignConfig.Systemd.Units); err != nil {
-		return err
+	for _, unit := range ignConfig.Systemd.Units {
+		if err := createUnit(&unit); err != nil {
+			return err
+		}
 	}
 	return dn.reboot("runOnceFromIgnition complete")
 }
