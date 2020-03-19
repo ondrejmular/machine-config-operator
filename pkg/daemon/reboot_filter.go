@@ -233,6 +233,8 @@ func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChan
 	newUnits := mapset.NewSetFromSlice(getUnitNames(newUnitsConfig))
 	newUnitsMap := unitsToMap(newUnitsConfig)
 	changes := make([]*UnitChanged, newUnits.Cardinality())
+	glog.Info("Checking for changes in units")
+	glog.Infof("created units: %s", oldUnits.Difference(newUnits).String())
 	for created := range oldUnits.Difference(newUnits).Iter() {
 		changes = append(changes, &UnitChanged{
 			name:       created.(string),
@@ -241,6 +243,7 @@ func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChan
 			changeType: fileCreated,
 		})
 	}
+	glog.Infof("deleted units: %s", newUnits.Difference(oldUnits).String())
 	for deleted := range newUnits.Difference(oldUnits).Iter() {
 		changes = append(changes, &UnitChanged{
 			name:       deleted.(string),
@@ -249,6 +252,7 @@ func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChan
 			changeType: fileDeleted,
 		})
 	}
+	glog.Infof("possibly changed units: %s", newUnits.Difference(oldUnits).String())
 	for changeCandidate := range newUnits.Intersect(oldUnits).Iter() {
 		newUnit := newUnitsMap[changeCandidate.(string)]
 		oldUnit := oldUnitsMap[changeCandidate.(string)]
