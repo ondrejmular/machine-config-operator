@@ -113,8 +113,8 @@ type FileChanged struct {
 
 func getFileNames(files []igntypes.File) []interface{} {
 	names := make([]interface{}, len(files))
-	for _, file := range files {
-		names = append(names, file.Path)
+	for i, file := range files {
+		names[i] = file.Path
 	}
 	return names
 }
@@ -204,14 +204,10 @@ func runPostActions(changes []*FileChanged) bool {
 }
 
 func getUnitNames(units []igntypes.Unit) []interface{} {
-	glog.Infof("units list: %v", units)
 	names := make([]interface{}, len(units))
-	glog.Infof("names: %v", names)
-	for _, unit := range units {
-		glog.Infof("name: %s; unit: %v", unit.Name, unit)
-		names = append(names, unit.Name)
+	for i, unit := range units {
+		names[i] = unit.Name
 	}
-	glog.Infof("names: %v", names)
 	return names
 }
 
