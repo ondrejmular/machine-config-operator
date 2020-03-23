@@ -204,10 +204,14 @@ func runPostActions(changes []*FileChanged) bool {
 }
 
 func getUnitNames(units []igntypes.Unit) []interface{} {
+	glog.Infof("units list: %v", units)
 	names := make([]interface{}, len(units))
+	glog.Infof("names: %v", names)
 	for _, unit := range units {
+		glog.Infof("name: %s; unit: %v", unit.Name, unit)
 		names = append(names, unit.Name)
 	}
+	glog.Infof("names: %v", names)
 	return names
 }
 
