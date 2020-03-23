@@ -386,7 +386,23 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 	if rebootRequired || runPostActions(filesChanges) {
 		return dn.finalizeAndReboot(newConfig)
 	}
-	glog.Info("Reboot not required.")
+	if err := dn.nodeWriter.SetDone(
+		dn.kubeClient.CoreV1().Nodes(),
+		dn.nodeLister,
+		dn.name,
+		newConfigName,
+	); err != nil {
+		glog.Errorf("Setting node's state to Done failed, node will reboot: %v", err)
+		return dn.finalizeAndReboot(newConfig)
+	}
+	if err := dn.storeCurrentConfigOnDisk(newConfig); err != nil {
+		glog.Errorf("Storing current config on disk failed, node will reboot: %v", err)
+		return dn.finalizeAndReboot(newConfig)
+	}
+	if err := dn.completeUpdate(dn.node, newConfigName); err != nil {
+		glog.Errorf("Uncordoning node failed, node will reboot: %v", err)
+		return dn.finalizeAndReboot(newConfig)
+	}
 	return nil
 }
 
