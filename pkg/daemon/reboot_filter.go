@@ -252,7 +252,7 @@ func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChan
 			changeType: fileDeleted,
 		})
 	}
-	glog.Infof("possibly changed units: %s", newUnits.Difference(oldUnits).String())
+	glog.Infof("possibly changed units: %s", newUnits.Intersect(oldUnits).String())
 	for changeCandidate := range newUnits.Intersect(oldUnits).Iter() {
 		newUnit := newUnitsMap[changeCandidate.(string)]
 		oldUnit := oldUnitsMap[changeCandidate.(string)]
