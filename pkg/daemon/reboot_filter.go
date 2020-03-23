@@ -132,7 +132,7 @@ func getFilesDiff(oldFilesConfig, newFilesConfig []igntypes.File) []*FileChanged
 	oldFilesMap := filesToMap(oldFilesConfig)
 	newFiles := mapset.NewSetFromSlice(getFileNames(newFilesConfig))
 	newFilesMap := filesToMap(newFilesConfig)
-	changes := make([]*FileChanged, newFiles.Cardinality())
+	changes := make([]*FileChanged, 0, newFiles.Cardinality())
 	for created := range oldFiles.Difference(newFiles).Iter() {
 		changes = append(changes, &FileChanged{
 			name:       created.(string),
@@ -236,7 +236,7 @@ func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChan
 	glog.Infof("new units: %s", newUnits.String())
 	glog.Infof("new unit names: %v", getUnitNames(newUnitsConfig))
 	newUnitsMap := unitsToMap(newUnitsConfig)
-	changes := make([]*UnitChanged, newUnits.Cardinality())
+	changes := make([]*UnitChanged, 0, newUnits.Cardinality())
 	glog.Info("Checking for changes in units")
 	glog.Infof("created units: %s", oldUnits.Difference(newUnits).String())
 	for created := range oldUnits.Difference(newUnits).Iter() {
