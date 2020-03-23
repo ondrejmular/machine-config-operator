@@ -41,8 +41,7 @@ const (
 	// coreUser is "core" and currently the only permissible user name
 	coreUserName = "core"
 	// SSH Keys for user "core" will only be written at /home/core/.ssh
-	// coreUserSSHPath = "/home/core/.ssh/"
-	coreUserSSHPath = "/rootfs/var/home/core/.ssh"
+	coreUserSSHPath = "/home/core/.ssh/"
 	// fipsFile is the file to check if FIPS is enabled
 	fipsFile = "/proc/sys/crypto/fips_enabled"
 	// Traditional kernel
