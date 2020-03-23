@@ -386,6 +386,7 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 	if rebootRequired || runPostActions(filesChanges) {
 		return dn.finalizeAndReboot(newConfig)
 	}
+	glog.Info("Reboot not required.")
 	return nil
 }
 
