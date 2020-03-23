@@ -230,9 +230,11 @@ type UnitChanged struct {
 func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChanged {
 	oldUnits := mapset.NewSetFromSlice(getUnitNames(oldUnitsConfig))
 	glog.Infof("old units: %s", oldUnits.String())
+	glog.Infof("old unit names: %v", getUnitNames(oldUnitsConfig))
 	oldUnitsMap := unitsToMap(oldUnitsConfig)
 	newUnits := mapset.NewSetFromSlice(getUnitNames(newUnitsConfig))
 	glog.Infof("new units: %s", newUnits.String())
+	glog.Infof("new unit names: %v", getUnitNames(newUnitsConfig))
 	newUnitsMap := unitsToMap(newUnitsConfig)
 	changes := make([]*UnitChanged, newUnits.Cardinality())
 	glog.Info("Checking for changes in units")
