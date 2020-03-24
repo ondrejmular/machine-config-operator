@@ -120,7 +120,7 @@ var FilterConfig = AvoidRebootConfig{
 				binary: "/bin/bash",
 				args: []string{
 					"-c",
-					"echo \"output of successfull command\" > /home/core/testfile.out",
+					"echo \"$(date)\" >> /home/core/testfile.out",
 				},
 			},
 			Drain: false,
