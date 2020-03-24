@@ -166,14 +166,14 @@ func getFilesChanges(oldFilesConfig, newFilesConfig []igntypes.File) []*FileChan
 	newFiles := mapset.NewSetFromSlice(getFileNames(newFilesConfig))
 	newFilesMap := filesToMap(newFilesConfig)
 	changes := make([]*FileChanged, 0, newFiles.Cardinality())
-	for created := range oldFiles.Difference(newFiles).Iter() {
+	for created := range newFiles.Difference(oldFiles).Iter() {
 		changes = append(changes, &FileChanged{
 			name:       created.(string),
 			file:       newFilesMap[created.(string)],
 			changeType: fileCreated,
 		})
 	}
-	for deleted := range newFiles.Difference(oldFiles).Iter() {
+	for deleted := range oldFiles.Difference(newFiles).Iter() {
 		changes = append(changes, &FileChanged{
 			name:       deleted.(string),
 			file:       oldFilesMap[deleted.(string)],
@@ -242,7 +242,7 @@ func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChan
 	newUnits := mapset.NewSetFromSlice(getUnitNames(newUnitsConfig))
 	newUnitsMap := unitsToMap(newUnitsConfig)
 	changes := make([]*UnitChanged, 0, newUnits.Cardinality())
-	for created := range oldUnits.Difference(newUnits).Iter() {
+	for created := range newUnits.Difference(oldUnits).Iter() {
 		changes = append(changes, &UnitChanged{
 			name:       created.(string),
 			newUnit:    newUnitsMap[created.(string)],
@@ -250,7 +250,7 @@ func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChan
 			changeType: fileCreated,
 		})
 	}
-	for deleted := range newUnits.Difference(oldUnits).Iter() {
+	for deleted := range oldUnits.Difference(newUnits).Iter() {
 		changes = append(changes, &UnitChanged{
 			name:       deleted.(string),
 			newUnit:    nil,
