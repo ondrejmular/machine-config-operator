@@ -283,7 +283,7 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 	}
 
 	dn.logSystem("Starting update from %s to %s: %+v", oldConfigName, newConfigName, diff)
-	rebootRequired := diff.osUpdate || diff.kargs || diff.fips || diff.kernelType || diff.units
+	rebootRequired := diff.osUpdate || diff.kargs || diff.fips || diff.kernelType
 
 	if err := dn.drain(); err != nil {
 		return err
