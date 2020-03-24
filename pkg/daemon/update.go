@@ -310,12 +310,12 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 		}
 	}()
 
-	filesChanges := getFilesDiff(
+	filesChanges := getFilesChanges(
 		oldConfig.Spec.Config.Storage.Files,
 		newConfig.Spec.Config.Storage.Files,
 	)
 
-	if err := handleFileChanges(filesChanges); err != nil {
+	if err := handleFilesChanges(filesChanges); err != nil {
 		return err
 	}
 	defer func() {
@@ -383,7 +383,7 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 	if err := dn.updateOS(newConfig); err != nil {
 		return err
 	}
-	if rebootRequired || runPostActions(filesChanges) {
+	if rebootRequired || runPostUpdateActions(filesChanges, unitsChanges) {
 		return dn.finalizeAndReboot(newConfig)
 	}
 	glog.Info("Reboot skipped as it is not required")

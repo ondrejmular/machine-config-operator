@@ -23,7 +23,7 @@ type AvoidRebootConfig struct {
 	Units []string
 }
 
-func (config *AvoidRebootConfig) GetAction(filePath string) PostUpdateAction {
+func (config AvoidRebootConfig) GetFileAction(filePath string) PostUpdateAction {
 	for _, entry := range config.Files {
 		matched, err := filepath.Match(entry.Glob, filePath)
 		if err != nil {
@@ -32,6 +32,18 @@ func (config *AvoidRebootConfig) GetAction(filePath string) PostUpdateAction {
 		}
 		if matched {
 			return entry.PostUpdateAction
+		}
+	}
+	return nil
+}
+
+func (config AvoidRebootConfig) GetUnitAction(unitName string) PostUpdateAction {
+	for _, entry := range config.Units {
+		if entry == unitName {
+			return RunSystemctlAction{
+				unitName:  unitName,
+				operation: unitRestart,
+			}
 		}
 	}
 	return nil
@@ -49,7 +61,11 @@ type RunBinaryAction struct {
 }
 
 func (action RunBinaryAction) Run() error {
+	glog.Infof(
+		"Running post update action: running command: %v %v", action.binary, action.args,
+	)
 	output, err := exec.Command(action.binary, action.args...).CombinedOutput()
+	// TODO: Add some timeout?
 	if err != nil {
 		glog.Errorf("Running post update action (running command: '%s %s') failed: %s; command output: %s", action.binary, action.args, err, output)
 		return err
@@ -71,6 +87,11 @@ type RunSystemctlAction struct {
 }
 
 func (action RunSystemctlAction) Run() error {
+	glog.Warningf(
+		"Systemd post update action not implemented! Unit: %s; Operation: %s",
+		action.unitName,
+		action.operation,
+	)
 	// TODO: implement
 	// https://godoc.org/github.com/coreos/go-systemd/dbus
 	return nil
@@ -85,16 +106,28 @@ func (action NoOpAction) Run() error {
 
 var FilterConfig = AvoidRebootConfig{
 	Files: []*FileFilterEntry{
+		// &FileFilterEntry{
+		// 	Glob: "/etc/kubernetes/kubelet.conf",
+		// 	PostUpdateAction: RunSystemctlAction{
+		// 		unitName:  "kubelet.service",
+		// 		operation: unitReload,
+		// 	},
+		// 	Drain: false,
+		// },
 		&FileFilterEntry{
-			Glob: "/etc/kubernetes/kubelet.conf",
-			PostUpdateAction: RunSystemctlAction{
-				unitName:  "kubelet.service",
-				operation: unitReload,
+			Glob: "/home/core/testfile",
+			PostUpdateAction: RunBinaryAction{
+				binary: "/bin/bash",
+				args: []string{
+					"-c",
+					"echo \"output of successfull command\" > /home/core/testfile.out",
+				},
 			},
 			Drain: false,
 		},
 	},
-	Units: []string{"chronyd.service", "sshd.service"},
+	// Units: []string{"chronyd.service", "sshd.service"},
+	Units: []string{"testonly.service"},
 }
 
 type FileChangeType string
@@ -127,7 +160,7 @@ func filesToMap(files []igntypes.File) map[string]igntypes.File {
 	return fileMap
 }
 
-func getFilesDiff(oldFilesConfig, newFilesConfig []igntypes.File) []*FileChanged {
+func getFilesChanges(oldFilesConfig, newFilesConfig []igntypes.File) []*FileChanged {
 	oldFiles := mapset.NewSetFromSlice(getFileNames(oldFilesConfig))
 	oldFilesMap := filesToMap(oldFilesConfig)
 	newFiles := mapset.NewSetFromSlice(getFileNames(newFilesConfig))
@@ -149,6 +182,7 @@ func getFilesDiff(oldFilesConfig, newFilesConfig []igntypes.File) []*FileChanged
 	}
 	for changeCandidate := range newFiles.Intersect(oldFiles).Iter() {
 		newFile := newFilesMap[changeCandidate.(string)]
+		// TODO: check against the state on the disk
 		if !reflect.DeepEqual(newFile, oldFilesMap[changeCandidate.(string)]) {
 			changes = append(changes, &FileChanged{
 				name:       changeCandidate.(string),
@@ -160,7 +194,7 @@ func getFilesDiff(oldFilesConfig, newFilesConfig []igntypes.File) []*FileChanged
 	return changes
 }
 
-func handleFileChanges(changes []*FileChanged) (err error) {
+func handleFilesChanges(changes []*FileChanged) (err error) {
 	for _, change := range changes {
 		switch change.changeType {
 		case fileCreated:
@@ -177,30 +211,6 @@ func handleFileChanges(changes []*FileChanged) (err error) {
 		}
 	}
 	return
-}
-
-func runPostActions(changes []*FileChanged) bool {
-	actions := make([]PostUpdateAction, len(changes))
-	for _, change := range changes {
-		switch change.changeType {
-		case fileUpdated:
-			action := FilterConfig.GetAction(change.name)
-			if action != nil {
-				return true
-			}
-			actions = append(actions, action)
-		default:
-			return true
-		}
-	}
-
-	for _, action := range actions {
-		if err := action.Run(); err != nil {
-			// TODO: log
-			return true
-		}
-	}
-	return false
 }
 
 func getUnitNames(units []igntypes.Unit) []interface{} {
@@ -220,25 +230,18 @@ func unitsToMap(units []igntypes.Unit) map[string]*igntypes.Unit {
 }
 
 type UnitChanged struct {
-	name           string
-	oldUnit        *igntypes.Unit
-	newUnit        *igntypes.Unit
-	deletedDropins []string
-	changeType     FileChangeType
+	name       string
+	oldUnit    *igntypes.Unit
+	newUnit    *igntypes.Unit
+	changeType FileChangeType
 }
 
 func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChanged {
 	oldUnits := mapset.NewSetFromSlice(getUnitNames(oldUnitsConfig))
-	glog.Infof("old units: %s", oldUnits.String())
-	glog.Infof("old unit names: %v", getUnitNames(oldUnitsConfig))
 	oldUnitsMap := unitsToMap(oldUnitsConfig)
 	newUnits := mapset.NewSetFromSlice(getUnitNames(newUnitsConfig))
-	glog.Infof("new units: %s", newUnits.String())
-	glog.Infof("new unit names: %v", getUnitNames(newUnitsConfig))
 	newUnitsMap := unitsToMap(newUnitsConfig)
 	changes := make([]*UnitChanged, 0, newUnits.Cardinality())
-	glog.Info("Checking for changes in units")
-	glog.Infof("created units: %s", oldUnits.Difference(newUnits).String())
 	for created := range oldUnits.Difference(newUnits).Iter() {
 		changes = append(changes, &UnitChanged{
 			name:       created.(string),
@@ -247,7 +250,6 @@ func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChan
 			changeType: fileCreated,
 		})
 	}
-	glog.Infof("deleted units: %s", newUnits.Difference(oldUnits).String())
 	for deleted := range newUnits.Difference(oldUnits).Iter() {
 		changes = append(changes, &UnitChanged{
 			name:       deleted.(string),
@@ -256,10 +258,10 @@ func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChan
 			changeType: fileDeleted,
 		})
 	}
-	glog.Infof("possibly changed units: %s", newUnits.Intersect(oldUnits).String())
 	for changeCandidate := range newUnits.Intersect(oldUnits).Iter() {
 		newUnit := newUnitsMap[changeCandidate.(string)]
 		oldUnit := oldUnitsMap[changeCandidate.(string)]
+		// TODO: check against the state on the disk, use checkUnits()
 		if !reflect.DeepEqual(newUnit, oldUnit) {
 			changes = append(changes, &UnitChanged{
 				name:       changeCandidate.(string),
@@ -294,4 +296,54 @@ func handleUnitsChanges(changes []*UnitChanged) (err error) {
 		}
 	}
 	return
+}
+
+func runPostUpdateActions(filesChanges []*FileChanged, unitsChanges []*UnitChanged) bool {
+	glog.Info("Trying to check whether changes in files and unit require reboot.")
+	actions := make([]PostUpdateAction, 0, len(filesChanges)+len(unitsChanges))
+	for _, change := range filesChanges {
+		switch change.changeType {
+		case fileCreated:
+			fallthrough
+		case fileUpdated:
+			action := FilterConfig.GetFileAction(change.name)
+			if action == nil {
+				glog.Infof("No action found for file %q, reboot will be required", change.name)
+				return true
+			}
+			actions = append(actions, action)
+			glog.Infof("Action found for file %q", change.name)
+		default:
+			glog.Infof("File %q was removed, reboot will be required", change.name)
+			return true
+		}
+	}
+
+	for _, change := range unitsChanges {
+		switch change.changeType {
+		case fileCreated:
+			fallthrough
+		case fileUpdated:
+			action := FilterConfig.GetUnitAction(change.name)
+			if action == nil {
+				glog.Infof("No action found for unit %q, reboot will be required", change.name)
+				return true
+			}
+			actions = append(actions, action)
+			glog.Infof("Action found for unit %q", change.name)
+		default:
+			glog.Infof("Unit %q was removed, reboot will be required", change.name)
+			return true
+		}
+	}
+
+	glog.Infof("Running %d post update action(s)...", len(actions))
+	for _, action := range actions {
+		if err := action.Run(); err != nil {
+			glog.Errorf("Post update action failed: %s", err)
+			return true
+		}
+	}
+	glog.Info("Running post update Actions were sucessfull")
+	return false
 }
