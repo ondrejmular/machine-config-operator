@@ -108,10 +108,15 @@ func (dn *Daemon) updateOSAndReboot(newConfig *mcfgv1.MachineConfig) (retErr err
 	if err := dn.updateOS(newConfig); err != nil {
 		return err
 	}
-	return dn.finalizeAndReboot(newConfig)
+	return dn.finalizeAndReboot(newConfig, false)
 }
 
-func (dn *Daemon) finalizeAndReboot(newConfig *mcfgv1.MachineConfig) (retErr error) {
+func (dn *Daemon) finalizeAndReboot(newConfig *mcfgv1.MachineConfig, drainRequired bool) (retErr error) {
+	if drainRequired {
+		if err := dn.drain(); err != nil {
+			return err
+		}
+	}
 	if out, err := dn.storePendingState(newConfig, 1); err != nil {
 		return errors.Wrapf(err, "failed to log pending config: %s", string(out))
 	}
@@ -285,14 +290,28 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 	dn.logSystem("Starting update from %s to %s: %+v", oldConfigName, newConfigName, diff)
 	rebootRequired := diff.osUpdate || diff.kargs || diff.fips || diff.kernelType
 
-	if err := dn.drain(); err != nil {
-		return err
-	}
+	filesChanges := getFilesChanges(
+		oldConfig.Spec.Config.Storage.Files,
+		newConfig.Spec.Config.Storage.Files,
+	)
 
 	unitsChanges := getUnitsChanges(
 		oldConfig.Spec.Config.Systemd.Units,
 		newConfig.Spec.Config.Systemd.Units,
 	)
+
+	postUpdateActions, getActionsErr := getPostUpdateActions(filesChanges, unitsChanges)
+	if getActionsErr != nil {
+		rebootRequired = true
+	}
+
+	drainRequired := rebootRequired || isDrainRequired(postUpdateActions)
+
+	if drainRequired {
+		if err := dn.drain(); err != nil {
+			return err
+		}
+	}
 
 	if err := handleUnitsChanges(unitsChanges); err != nil {
 		return err
@@ -309,11 +328,6 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 			}
 		}
 	}()
-
-	filesChanges := getFilesChanges(
-		oldConfig.Spec.Config.Storage.Files,
-		newConfig.Spec.Config.Storage.Files,
-	)
 
 	if err := handleFilesChanges(filesChanges); err != nil {
 		return err
@@ -383,13 +397,13 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 	if err := dn.updateOS(newConfig); err != nil {
 		return err
 	}
-	if rebootRequired || runPostUpdateActions(filesChanges, unitsChanges) {
-		return dn.finalizeAndReboot(newConfig)
+	if rebootRequired || runPostUpdateActions(postUpdateActions) {
+		return dn.finalizeAndReboot(newConfig, !drainRequired)
 	}
 	glog.Info("Reboot skipped as it is not required")
 	// if err := dn.storeCurrentConfigOnDisk(newConfig); err != nil {
 	// 	glog.Errorf("Storing current config on disk failed, node will reboot: %v", err)
-	// 	return dn.finalizeAndReboot(newConfig)
+	// 	return dn.finalizeAndReboot(newConfig, !drainRequired)
 	// }
 	if err := dn.nodeWriter.SetDone(
 		dn.kubeClient.CoreV1().Nodes(),
@@ -398,13 +412,14 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 		newConfigName,
 	); err != nil {
 		glog.Errorf("Setting node's state to Done failed, node will reboot: %v", err)
-		return dn.finalizeAndReboot(newConfig)
+		return dn.finalizeAndReboot(newConfig, !drainRequired)
 	}
 	glog.Infof("Starting uncordoning node %v", dn.node.GetName())
-	// if err := dn.completeUpdate(dn.node, newConfigName); err != nil {
-	if err := drain.Uncordon(dn.kubeClient.CoreV1().Nodes(), dn.node, nil); err != nil {
-		glog.Errorf("Uncordoning node failed, node will reboot: %v", err)
-		return dn.finalizeAndReboot(newConfig)
+	if drainRequired {
+		if err := drain.Uncordon(dn.kubeClient.CoreV1().Nodes(), dn.node, nil); err != nil {
+			glog.Errorf("Uncordoning node failed, node will reboot: %v", err)
+			return dn.finalizeAndReboot(newConfig, false)
+		}
 	}
 	glog.Infof("In desired config %s", newConfigName)
 	MCDUpdateState.WithLabelValues(newConfigName, "").SetToCurrentTime()

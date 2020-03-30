@@ -12,27 +12,61 @@ import (
 )
 
 type FileFilterEntry struct {
-	Glob             string
-	PostUpdateAction PostUpdateAction
-	Drain            bool
+	glob             string
+	postUpdateAction PostUpdateAction
+}
+
+type UnitFilterEntry struct {
+	name          string
+	drainRequired bool
 }
 
 type AvoidRebootConfig struct {
 	// Files filter which do not require reboot
 	Files []*FileFilterEntry
 	// List of systemd unit that do not require system reboot, but rather just unit restart
-	Units []string
+	Units []*UnitFilterEntry
+}
+
+var filterConfig = AvoidRebootConfig{
+	Files: []*FileFilterEntry{
+		// &FileFilterEntry{
+		// 	glob: "/etc/kubernetes/kubelet.conf",
+		// 	postUpdateAction: RunSystemctlAction{
+		// 		unitName:  "kubelet.service",
+		// 		operation: unitReload,
+		// 	},
+		// 	drainRequired: true,
+		// },
+		&FileFilterEntry{
+			glob: "/home/core/testfile",
+			postUpdateAction: RunBinaryAction{
+				binary: "/bin/bash",
+				args: []string{
+					"-c",
+					"echo \"$(date)\" >> /home/core/testfile.out",
+				},
+				DrainRequired: DrainRequired{drainRequired: false},
+			},
+		},
+	},
+	Units: []*UnitFilterEntry{
+		&UnitFilterEntry{
+			name:          "testonly.service",
+			drainRequired: false,
+		},
+	},
 }
 
 func (config AvoidRebootConfig) getFileAction(filePath string) PostUpdateAction {
 	for _, entry := range config.Files {
-		matched, err := filepath.Match(entry.Glob, filePath)
+		matched, err := filepath.Match(entry.glob, filePath)
 		if err != nil {
 			// TODO: log
 			continue
 		}
 		if matched {
-			return entry.PostUpdateAction
+			return entry.postUpdateAction
 		}
 	}
 	return nil
@@ -40,10 +74,11 @@ func (config AvoidRebootConfig) getFileAction(filePath string) PostUpdateAction 
 
 func (config AvoidRebootConfig) getUnitAction(unitName string) PostUpdateAction {
 	for _, entry := range config.Units {
-		if entry == unitName {
+		if entry.name == unitName {
 			return RunSystemctlAction{
-				unitName:  unitName,
-				operation: unitRestart,
+				unitName,
+				unitRestart,
+				DrainRequired{drainRequired: entry.drainRequired},
 			}
 		}
 	}
@@ -52,13 +87,24 @@ func (config AvoidRebootConfig) getUnitAction(unitName string) PostUpdateAction 
 
 type PostUpdateAction interface {
 	Run() error
+	getIsDrainRequired() bool
 	// TODO: add dbus connection setup
 	// SetDbusConnection()
+}
+
+type DrainRequired struct {
+	drainRequired bool
+}
+
+func (idr DrainRequired) getIsDrainRequired() bool {
+	return idr.drainRequired
 }
 
 type RunBinaryAction struct {
 	binary string
 	args   []string
+	// IsDrainRequired bool
+	DrainRequired
 }
 
 func (action RunBinaryAction) Run() error {
@@ -84,6 +130,7 @@ const (
 type RunSystemctlAction struct {
 	unitName  string
 	operation UnitOperation
+	DrainRequired
 	// TODO: add systemd dbus connection
 }
 
@@ -96,32 +143,6 @@ func (action RunSystemctlAction) Run() error {
 	// TODO: implement
 	// https://godoc.org/github.com/coreos/go-systemd/dbus
 	return nil
-}
-
-var filterConfig = AvoidRebootConfig{
-	Files: []*FileFilterEntry{
-		// &FileFilterEntry{
-		// 	Glob: "/etc/kubernetes/kubelet.conf",
-		// 	PostUpdateAction: RunSystemctlAction{
-		// 		unitName:  "kubelet.service",
-		// 		operation: unitReload,
-		// 	},
-		// 	Drain: false,
-		// },
-		&FileFilterEntry{
-			Glob: "/home/core/testfile",
-			PostUpdateAction: RunBinaryAction{
-				binary: "/bin/bash",
-				args: []string{
-					"-c",
-					"echo \"$(date)\" >> /home/core/testfile.out",
-				},
-			},
-			Drain: false,
-		},
-	},
-	// Units: []string{"chronyd.service", "sshd.service"},
-	Units: []string{"testonly.service"},
 }
 
 type ChangeType string
@@ -292,9 +313,10 @@ func handleUnitsChanges(changes []*UnitChange) (err error) {
 	return
 }
 
-func runPostUpdateActions(filesChanges []*FileChange, unitsChanges []*UnitChange) bool {
+func getPostUpdateActions(filesChanges []*FileChange, unitsChanges []*UnitChange) ([]PostUpdateAction, error) {
 	glog.Info("Trying to check whether changes in files and units require system reboot.")
 	actions := make([]PostUpdateAction, 0, len(filesChanges)+len(unitsChanges))
+	rebootRequiredMsg := ", reboot will be required"
 	for _, change := range filesChanges {
 		switch change.changeType {
 		case changeCreated:
@@ -302,14 +324,16 @@ func runPostUpdateActions(filesChanges []*FileChange, unitsChanges []*UnitChange
 		case changeUpdated:
 			action := filterConfig.getFileAction(change.name)
 			if action == nil {
-				glog.Infof("No action found for file %q, reboot will be required", change.name)
-				return true
+				err := fmt.Errorf("No action found for file %q", change.name)
+				glog.Infof("%s%s", err, rebootRequiredMsg)
+				return nil, err
 			}
 			actions = append(actions, action)
 			glog.Infof("Action found for file %q", change.name)
 		default:
-			glog.Infof("File %q was removed, reboot will be required", change.name)
-			return true
+			err := fmt.Errorf("File %q was removed", change.name)
+			glog.Infof("%s%s", err, rebootRequiredMsg)
+			return nil, err
 		}
 	}
 
@@ -320,17 +344,30 @@ func runPostUpdateActions(filesChanges []*FileChange, unitsChanges []*UnitChange
 		case changeUpdated:
 			action := filterConfig.getUnitAction(change.name)
 			if action == nil {
-				glog.Infof("No action found for unit %q, reboot will be required", change.name)
-				return true
+				err := fmt.Errorf("No action found for unit %q", change.name)
+				glog.Infof("%s%s", err, rebootRequiredMsg)
+				return nil, err
 			}
 			actions = append(actions, action)
 			glog.Infof("Action found for unit %q", change.name)
 		default:
-			glog.Infof("Unit %q was removed, reboot will be required", change.name)
-			return true
+			err := fmt.Errorf("Unit %q was removed", change.name)
+			glog.Infof("%s%s", err, rebootRequiredMsg)
+			return nil, err
 		}
 	}
+	return actions, nil
+}
 
+func isDrainRequired(actions []PostUpdateAction) bool {
+	isRequired := false
+	for _, action := range actions {
+		isRequired = isRequired || action.getIsDrainRequired()
+	}
+	return isRequired
+}
+
+func runPostUpdateActions(actions []PostUpdateAction) bool {
 	glog.Infof("Running %d post update action(s)...", len(actions))
 	for _, action := range actions {
 		if err := action.Run(); err != nil {
