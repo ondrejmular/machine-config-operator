@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -17,13 +18,13 @@ type FileFilterEntry struct {
 }
 
 type AvoidRebootConfig struct {
-	// Files filter which do not require
+	// Files filter which do not require reboot
 	Files []*FileFilterEntry
 	// List of systemd unit that do not require system reboot, but rather just unit restart
 	Units []string
 }
 
-func (config AvoidRebootConfig) GetFileAction(filePath string) PostUpdateAction {
+func (config AvoidRebootConfig) getFileAction(filePath string) PostUpdateAction {
 	for _, entry := range config.Files {
 		matched, err := filepath.Match(entry.Glob, filePath)
 		if err != nil {
@@ -37,7 +38,7 @@ func (config AvoidRebootConfig) GetFileAction(filePath string) PostUpdateAction 
 	return nil
 }
 
-func (config AvoidRebootConfig) GetUnitAction(unitName string) PostUpdateAction {
+func (config AvoidRebootConfig) getUnitAction(unitName string) PostUpdateAction {
 	for _, entry := range config.Units {
 		if entry == unitName {
 			return RunSystemctlAction{
@@ -97,14 +98,7 @@ func (action RunSystemctlAction) Run() error {
 	return nil
 }
 
-type NoOpAction struct {
-}
-
-func (action NoOpAction) Run() error {
-	return nil
-}
-
-var FilterConfig = AvoidRebootConfig{
+var filterConfig = AvoidRebootConfig{
 	Files: []*FileFilterEntry{
 		// &FileFilterEntry{
 		// 	Glob: "/etc/kubernetes/kubelet.conf",
@@ -130,18 +124,18 @@ var FilterConfig = AvoidRebootConfig{
 	Units: []string{"testonly.service"},
 }
 
-type FileChangeType string
+type ChangeType string
 
 const (
-	fileCreated FileChangeType = "created"
-	fileDeleted FileChangeType = "deleted"
-	fileUpdated FileChangeType = "updated"
+	changeCreated ChangeType = "created"
+	changeDeleted ChangeType = "deleted"
+	changeUpdated ChangeType = "updated"
 )
 
-type FileChanged struct {
+type FileChange struct {
 	name       string
 	file       igntypes.File
-	changeType FileChangeType
+	changeType ChangeType
 }
 
 func getFileNames(files []igntypes.File) []interface{} {
@@ -160,57 +154,64 @@ func filesToMap(files []igntypes.File) map[string]igntypes.File {
 	return fileMap
 }
 
-func getFilesChanges(oldFilesConfig, newFilesConfig []igntypes.File) []*FileChanged {
+func getFilesChanges(oldFilesConfig, newFilesConfig []igntypes.File) []*FileChange {
 	oldFiles := mapset.NewSetFromSlice(getFileNames(oldFilesConfig))
 	oldFilesMap := filesToMap(oldFilesConfig)
 	newFiles := mapset.NewSetFromSlice(getFileNames(newFilesConfig))
 	newFilesMap := filesToMap(newFilesConfig)
-	changes := make([]*FileChanged, 0, newFiles.Cardinality())
+	changes := make([]*FileChange, 0, newFiles.Cardinality())
 	for created := range newFiles.Difference(oldFiles).Iter() {
-		changes = append(changes, &FileChanged{
+		changes = append(changes, &FileChange{
 			name:       created.(string),
 			file:       newFilesMap[created.(string)],
-			changeType: fileCreated,
+			changeType: changeCreated,
 		})
 	}
 	for deleted := range oldFiles.Difference(newFiles).Iter() {
-		changes = append(changes, &FileChanged{
+		changes = append(changes, &FileChange{
 			name:       deleted.(string),
 			file:       oldFilesMap[deleted.(string)],
-			changeType: fileDeleted,
+			changeType: changeDeleted,
 		})
 	}
 	for changeCandidate := range newFiles.Intersect(oldFiles).Iter() {
 		newFile := newFilesMap[changeCandidate.(string)]
-		// TODO: check against the state on the disk
+		// TODO: check against the state on the disk using checkFiles(...) function
 		if !reflect.DeepEqual(newFile, oldFilesMap[changeCandidate.(string)]) {
-			changes = append(changes, &FileChanged{
+			changes = append(changes, &FileChange{
 				name:       changeCandidate.(string),
 				file:       newFile,
-				changeType: fileUpdated,
+				changeType: changeUpdated,
 			})
 		}
 	}
 	return changes
 }
 
-func handleFilesChanges(changes []*FileChanged) (err error) {
+func handleFilesChanges(changes []*FileChange) (err error) {
 	for _, change := range changes {
 		switch change.changeType {
-		case fileCreated:
+		case changeCreated:
 			fallthrough
-		case fileUpdated:
+		case changeUpdated:
 			err = writeFile(change.file)
-		case fileDeleted:
+		case changeDeleted:
 			err = deleteFile(change.name)
 		default:
-			err = nil
+			err = fmt.Errorf("Unknown change type %q", change.changeType)
 		}
 		if err != nil {
 			return
 		}
 	}
 	return
+}
+
+type UnitChange struct {
+	name       string
+	oldUnit    *igntypes.Unit
+	newUnit    *igntypes.Unit
+	changeType ChangeType
 }
 
 func getUnitNames(units []igntypes.Unit) []interface{} {
@@ -229,33 +230,26 @@ func unitsToMap(units []igntypes.Unit) map[string]*igntypes.Unit {
 	return unitMap
 }
 
-type UnitChanged struct {
-	name       string
-	oldUnit    *igntypes.Unit
-	newUnit    *igntypes.Unit
-	changeType FileChangeType
-}
-
-func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChanged {
+func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChange {
 	oldUnits := mapset.NewSetFromSlice(getUnitNames(oldUnitsConfig))
 	oldUnitsMap := unitsToMap(oldUnitsConfig)
 	newUnits := mapset.NewSetFromSlice(getUnitNames(newUnitsConfig))
 	newUnitsMap := unitsToMap(newUnitsConfig)
-	changes := make([]*UnitChanged, 0, newUnits.Cardinality())
+	changes := make([]*UnitChange, 0, newUnits.Cardinality())
 	for created := range newUnits.Difference(oldUnits).Iter() {
-		changes = append(changes, &UnitChanged{
+		changes = append(changes, &UnitChange{
 			name:       created.(string),
 			newUnit:    newUnitsMap[created.(string)],
 			oldUnit:    nil,
-			changeType: fileCreated,
+			changeType: changeCreated,
 		})
 	}
 	for deleted := range oldUnits.Difference(newUnits).Iter() {
-		changes = append(changes, &UnitChanged{
+		changes = append(changes, &UnitChange{
 			name:       deleted.(string),
 			newUnit:    nil,
 			oldUnit:    oldUnitsMap[deleted.(string)],
-			changeType: fileDeleted,
+			changeType: changeDeleted,
 		})
 	}
 	for changeCandidate := range newUnits.Intersect(oldUnits).Iter() {
@@ -263,30 +257,30 @@ func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChan
 		oldUnit := oldUnitsMap[changeCandidate.(string)]
 		// TODO: check against the state on the disk, use checkUnits()
 		if !reflect.DeepEqual(newUnit, oldUnit) {
-			changes = append(changes, &UnitChanged{
+			changes = append(changes, &UnitChange{
 				name:       changeCandidate.(string),
 				newUnit:    newUnit,
 				oldUnit:    oldUnit,
-				changeType: fileUpdated,
+				changeType: changeUpdated,
 			})
 		}
 	}
 	return changes
 }
 
-func handleUnitsChanges(changes []*UnitChanged) (err error) {
+func handleUnitsChanges(changes []*UnitChange) (err error) {
 	for _, change := range changes {
 		switch change.changeType {
-		case fileCreated:
+		case changeCreated:
 			err = createUnit(change.newUnit)
-		case fileUpdated:
+		case changeUpdated:
 			err = deleteUnit(change.oldUnit)
 			if err != nil {
 				// TODO: try to write it back or do it in roll-back?
 				return
 			}
 			err = createUnit(change.newUnit)
-		case fileDeleted:
+		case changeDeleted:
 			err = deleteUnit(change.oldUnit)
 		default:
 			err = nil
@@ -298,15 +292,15 @@ func handleUnitsChanges(changes []*UnitChanged) (err error) {
 	return
 }
 
-func runPostUpdateActions(filesChanges []*FileChanged, unitsChanges []*UnitChanged) bool {
-	glog.Info("Trying to check whether changes in files and unit require reboot.")
+func runPostUpdateActions(filesChanges []*FileChange, unitsChanges []*UnitChange) bool {
+	glog.Info("Trying to check whether changes in files and units require system reboot.")
 	actions := make([]PostUpdateAction, 0, len(filesChanges)+len(unitsChanges))
 	for _, change := range filesChanges {
 		switch change.changeType {
-		case fileCreated:
+		case changeCreated:
 			fallthrough
-		case fileUpdated:
-			action := FilterConfig.GetFileAction(change.name)
+		case changeUpdated:
+			action := filterConfig.getFileAction(change.name)
 			if action == nil {
 				glog.Infof("No action found for file %q, reboot will be required", change.name)
 				return true
@@ -321,10 +315,10 @@ func runPostUpdateActions(filesChanges []*FileChanged, unitsChanges []*UnitChang
 
 	for _, change := range unitsChanges {
 		switch change.changeType {
-		case fileCreated:
+		case changeCreated:
 			fallthrough
-		case fileUpdated:
-			action := FilterConfig.GetUnitAction(change.name)
+		case changeUpdated:
+			action := filterConfig.getUnitAction(change.name)
 			if action == nil {
 				glog.Infof("No action found for unit %q, reboot will be required", change.name)
 				return true
