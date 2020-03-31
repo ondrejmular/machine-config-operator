@@ -295,12 +295,14 @@ func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChan
 		})
 	}
 	for changeCandidate := range newUnits.Intersect(oldUnits).Iter() {
-		newUnit := newUnitsMap[changeCandidate.(string)]
-		oldUnit := oldUnitsMap[changeCandidate.(string)]
+		changedUnitName := changeCandidate.(string)
+		newUnit := newUnitsMap[changedUnitName]
+		oldUnit := oldUnitsMap[changedUnitName]
 		// TODO: check against the state on the disk, use checkUnits()
 		if !reflect.DeepEqual(newUnit, oldUnit) {
+			glog.Infof("unit %q changed", changedUnitName)
 			changes = append(changes, &UnitChange{
-				name:       changeCandidate.(string),
+				name:       changedUnitName,
 				newUnit:    newUnit,
 				oldUnit:    oldUnit,
 				changeType: changeUpdated,
