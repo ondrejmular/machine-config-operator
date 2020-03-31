@@ -50,10 +50,21 @@ var filterConfig = AvoidRebootConfig{
 				DrainRequired: DrainRequired{drainRequired: false},
 			},
 		},
+		&FileFilterEntry{
+			glob: "/home/core/drain_required",
+			postUpdateAction: RunBinaryAction{
+				binary: "/bin/bash",
+				args: []string{
+					"-c",
+					"echo \"$(date)\" >> /home/core/drain_required.out",
+				},
+				DrainRequired: DrainRequired{drainRequired: true},
+			},
+		},
 	},
 	Units: []*UnitFilterEntry{
 		&UnitFilterEntry{
-			name:          "testonly.service",
+			name:          "machine-config-daemon-firstboot.service",
 			drainRequired: false,
 		},
 	},
