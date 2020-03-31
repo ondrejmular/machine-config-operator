@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 
+	systemdDbus "github.com/coreos/go-systemd/dbus"
 	igntypes "github.com/coreos/ignition/config/v2_2/types"
 	"github.com/deckarep/golang-set"
 	"github.com/golang/glog"
@@ -32,7 +33,7 @@ var filterConfig = AvoidRebootConfig{
 	Files: []*FileFilterEntry{
 		// &FileFilterEntry{
 		// 	glob: "/etc/kubernetes/kubelet.conf",
-		// 	postUpdateAction: RunSystemctlAction{
+		// 	postUpdateAction: SystemdAction{
 		// 		unitName:  "kubelet.service",
 		// 		operation: unitReload,
 		// 	},
@@ -72,12 +73,13 @@ func (config AvoidRebootConfig) getFileAction(filePath string) PostUpdateAction 
 	return nil
 }
 
-func (config AvoidRebootConfig) getUnitAction(unitName string) PostUpdateAction {
+func (config AvoidRebootConfig) getUnitAction(unitName string, systemdConnection *systemdDbus.Conn) PostUpdateAction {
 	for _, entry := range config.Units {
 		if entry.name == unitName {
-			return RunSystemctlAction{
+			return SystemdAction{
 				unitName,
 				unitRestart,
+				systemdConnection,
 				DrainRequired{drainRequired: entry.drainRequired},
 			}
 		}
@@ -127,21 +129,32 @@ const (
 	unitReload  UnitOperation = "reload"
 )
 
-type RunSystemctlAction struct {
-	unitName  string
-	operation UnitOperation
+type SystemdAction struct {
+	unitName          string
+	operation         UnitOperation
+	systemdConnection *systemdDbus.Conn
 	DrainRequired
-	// TODO: add systemd dbus connection
 }
 
-func (action RunSystemctlAction) Run() error {
+func (action SystemdAction) Run() error {
 	glog.Warningf(
 		"Systemd post update action not implemented! Unit: %s; Operation: %s",
 		action.unitName,
 		action.operation,
 	)
-	// TODO: implement
-	// https://godoc.org/github.com/coreos/go-systemd/dbus
+	if action.systemdConnection == nil {
+		return fmt.Errorf(
+			"Unable to run post update action for unit %q: systemd dbus connection not specified",
+			action.unitName,
+		)
+	}
+	units, err := action.systemdConnection.ListUnitFiles()
+	if err != nil {
+		return fmt.Errorf("Error while running systemd action: %s", err)
+	}
+	for _, unit := range units {
+		glog.Infof("Unit file: %s; type: %s", unit.Path, unit.Type)
+	}
 	return nil
 }
 
@@ -313,7 +326,7 @@ func handleUnitsChanges(changes []*UnitChange) (err error) {
 	return
 }
 
-func getPostUpdateActions(filesChanges []*FileChange, unitsChanges []*UnitChange) ([]PostUpdateAction, error) {
+func getPostUpdateActions(filesChanges []*FileChange, unitsChanges []*UnitChange, systemdConnection *systemdDbus.Conn) ([]PostUpdateAction, error) {
 	glog.Info("Trying to check whether changes in files and units require system reboot.")
 	actions := make([]PostUpdateAction, 0, len(filesChanges)+len(unitsChanges))
 	rebootRequiredMsg := ", reboot will be required"
@@ -342,10 +355,18 @@ func getPostUpdateActions(filesChanges []*FileChange, unitsChanges []*UnitChange
 		case changeCreated:
 			fallthrough
 		case changeUpdated:
-			action := filterConfig.getUnitAction(change.name)
+			action := filterConfig.getUnitAction(change.name, systemdConnection)
 			if action == nil {
 				err := fmt.Errorf("No action found for unit %q", change.name)
 				glog.Infof("%s%s", err, rebootRequiredMsg)
+				return nil, err
+			}
+			if systemdConnection == nil {
+				err := fmt.Errorf(
+					"Missing systemd connection for running post update action for unit %q",
+					change.name,
+				)
+				glog.Errorf("%s%s", err, rebootRequiredMsg)
 				return nil, err
 			}
 			actions = append(actions, action)

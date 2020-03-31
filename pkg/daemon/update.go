@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	systemdDbus "github.com/coreos/go-systemd/dbus"
 	igntypes "github.com/coreos/ignition/config/v2_2/types"
 	"github.com/golang/glog"
 	"github.com/google/renameio"
@@ -300,7 +301,23 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 		newConfig.Spec.Config.Systemd.Units,
 	)
 
-	postUpdateActions, getActionsErr := getPostUpdateActions(filesChanges, unitsChanges)
+	systemdConnection, dbusConnErr := systemdDbus.NewSystemConnection()
+	if dbusConnErr == nil {
+		defer func() {
+			systemdConnection.Close()
+		}()
+	} else {
+		glog.Warningf("Unable to establish systemd dbus connection: %s", dbusConnErr)
+		// No more actions needed here as a systemd connection is not always
+		// required (only if there is systemd related post update action
+		// present). If connection should be required, getPostUpdateActions
+		// function will return error if nil connection is provided and then
+		// rebootRequired will be se to true
+	}
+
+	postUpdateActions, getActionsErr := getPostUpdateActions(
+		filesChanges, unitsChanges, systemdConnection,
+	)
 	if getActionsErr != nil {
 		rebootRequired = true
 	}
