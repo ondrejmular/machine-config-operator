@@ -301,6 +301,11 @@ func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChan
 		// TODO: check against the state on the disk, use checkUnits()
 		if !reflect.DeepEqual(newUnit, oldUnit) {
 			glog.Infof("unit %q changed", changedUnitName)
+			glog.Infof("--------------------------")
+			glog.Infof("new unit: %v", newUnit)
+			glog.Infof("--------------------------")
+			glog.Infof("old unit: %v", oldUnit)
+			glog.Infof("--------------------------")
 			changes = append(changes, &UnitChange{
 				name:       changedUnitName,
 				newUnit:    newUnit,
