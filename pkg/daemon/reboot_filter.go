@@ -29,16 +29,9 @@ type AvoidRebootConfig struct {
 	Units []*UnitFilterEntry
 }
 
+// TODO: create a proper filter config as this one is just a testing one
 var filterConfig = AvoidRebootConfig{
 	Files: []*FileFilterEntry{
-		// &FileFilterEntry{
-		// 	glob: "/etc/kubernetes/kubelet.conf",
-		// 	postUpdateAction: SystemdAction{
-		// 		unitName:  "kubelet.service",
-		// 		operation: unitReload,
-		// 	},
-		// 	drainRequired: true,
-		// },
 		&FileFilterEntry{
 			glob: "/home/core/testfile",
 			postUpdateAction: RunBinaryAction{
@@ -64,7 +57,11 @@ var filterConfig = AvoidRebootConfig{
 	},
 	Units: []*UnitFilterEntry{
 		&UnitFilterEntry{
-			name:          "machine-config-daemon-firstboot.service",
+			name:          "test-service-drain.service",
+			drainRequired: true,
+		},
+		&UnitFilterEntry{
+			name:          "test-service.service",
 			drainRequired: false,
 		},
 	},
