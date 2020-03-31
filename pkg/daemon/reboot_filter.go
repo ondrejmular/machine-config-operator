@@ -251,8 +251,8 @@ func handleFilesChanges(changes []*FileChange) (err error) {
 
 type UnitChange struct {
 	name       string
-	oldUnit    *igntypes.Unit
-	newUnit    *igntypes.Unit
+	oldUnit    igntypes.Unit
+	newUnit    igntypes.Unit
 	changeType ChangeType
 }
 
@@ -264,10 +264,10 @@ func getUnitNames(units []igntypes.Unit) []interface{} {
 	return names
 }
 
-func unitsToMap(units []igntypes.Unit) map[string]*igntypes.Unit {
-	unitMap := make(map[string]*igntypes.Unit, len(units))
+func unitsToMap(units []igntypes.Unit) map[string]igntypes.Unit {
+	unitMap := make(map[string]igntypes.Unit, len(units))
 	for _, unit := range units {
-		unitMap[unit.Name] = &unit
+		unitMap[unit.Name] = unit
 	}
 	return unitMap
 }
@@ -282,14 +282,12 @@ func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChan
 		changes = append(changes, &UnitChange{
 			name:       created.(string),
 			newUnit:    newUnitsMap[created.(string)],
-			oldUnit:    nil,
 			changeType: changeCreated,
 		})
 	}
 	for deleted := range oldUnits.Difference(newUnits).Iter() {
 		changes = append(changes, &UnitChange{
 			name:       deleted.(string),
-			newUnit:    nil,
 			oldUnit:    oldUnitsMap[deleted.(string)],
 			changeType: changeDeleted,
 		})
@@ -321,16 +319,16 @@ func handleUnitsChanges(changes []*UnitChange) (err error) {
 	for _, change := range changes {
 		switch change.changeType {
 		case changeCreated:
-			err = createUnit(change.newUnit)
+			err = createUnit(&change.newUnit)
 		case changeUpdated:
-			err = deleteUnit(change.oldUnit)
+			err = deleteUnit(&change.oldUnit)
 			if err != nil {
 				// TODO: try to write it back or do it in roll-back?
 				return
 			}
-			err = createUnit(change.newUnit)
+			err = createUnit(&change.newUnit)
 		case changeDeleted:
-			err = deleteUnit(change.oldUnit)
+			err = deleteUnit(&change.oldUnit)
 		default:
 			err = nil
 		}
