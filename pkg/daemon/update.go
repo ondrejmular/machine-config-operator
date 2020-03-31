@@ -328,6 +328,8 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 		if err := dn.drain(); err != nil {
 			return err
 		}
+	} else {
+		glog.Info("Draining node skipped as it is not required")
 	}
 
 	if err := handleUnitsChanges(unitsChanges); err != nil {
@@ -431,8 +433,8 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 		glog.Errorf("Setting node's state to Done failed, node will reboot: %v", err)
 		return dn.finalizeAndReboot(newConfig, !drainRequired)
 	}
-	glog.Infof("Starting uncordoning node %v", dn.node.GetName())
 	if drainRequired {
+		glog.Infof("Starting uncordoning node %v", dn.node.GetName())
 		if err := drain.Uncordon(dn.kubeClient.CoreV1().Nodes(), dn.node, nil); err != nil {
 			glog.Errorf("Uncordoning node failed, node will reboot: %v", err)
 			return dn.finalizeAndReboot(newConfig, false)
