@@ -353,7 +353,7 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 	}
 	defer func() {
 		if retErr != nil {
-			if err := dn.writeFiles(oldConfig.Spec.Config.Storage.Files); err != nil {
+			if err := writeFiles(oldConfig.Spec.Config.Storage.Files); err != nil {
 				retErr = errors.Wrapf(retErr, "error rolling back files writes %v", err)
 				return
 			}
@@ -990,42 +990,35 @@ func disableUnit(unit igntypes.Unit) error {
 
 // writeFiles writes the given files to disk.
 // it doesn't fetch remote files and expects a flattened config file.
-func (dn *Daemon) writeFiles(files []igntypes.File) error {
+func writeFiles(files []igntypes.File) error {
 	for _, file := range files {
-		if err := writeFile(file); err != nil {
-			return err
-		}
-	}
-	return nil
-}
+		glog.Infof("Writing file %q", file.Path)
 
-func writeFile(file igntypes.File) error {
-	glog.Infof("Writing file %q", file.Path)
-
-	contents, err := dataurl.DecodeString(file.Contents.Source)
-	if err != nil {
-		return err
-	}
-	mode := defaultFilePermissions
-	if file.Mode != nil {
-		mode = os.FileMode(*file.Mode)
-	}
-	var (
-		uid, gid = -1, -1
-	)
-	// set chown if file information is provided
-	if file.User != nil || file.Group != nil {
-		uid, gid, err = getFileOwnership(file)
+		contents, err := dataurl.DecodeString(file.Contents.Source)
 		if err != nil {
-			err = fmt.Errorf("failed to retrieve file ownership for file %q: %v", file.Path, err)
 			return err
 		}
-	}
-	if err = createOrigFile(file.Path); err != nil {
-		return err
-	}
-	if err = writeFileAtomically(file.Path, contents.Data, defaultDirectoryPermissions, mode, uid, gid); err != nil {
-		return err
+		mode := defaultFilePermissions
+		if file.Mode != nil {
+			mode = os.FileMode(*file.Mode)
+		}
+		var (
+			uid, gid = -1, -1
+		)
+		// set chown if file information is provided
+		if file.User != nil || file.Group != nil {
+			uid, gid, err = getFileOwnership(file)
+			if err != nil {
+				err = fmt.Errorf("failed to retrieve file ownership for file %q: %v", file.Path, err)
+				return err
+			}
+		}
+		if err = createOrigFile(file.Path); err != nil {
+			return err
+		}
+		if err = writeFileAtomically(file.Path, contents.Data, defaultDirectoryPermissions, mode, uid, gid); err != nil {
+			return err
+		}
 	}
 	return nil
 }

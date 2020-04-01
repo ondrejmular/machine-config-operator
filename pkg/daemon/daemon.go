@@ -1064,7 +1064,7 @@ func (dn *Daemon) runOnceFromMachineConfig(machineConfig mcfgv1.MachineConfig, c
 // runOnceFromIgnition executes MCD's subset of Ignition functionality in onceFrom mode
 func (dn *Daemon) runOnceFromIgnition(ignConfig igntypes.Config) error {
 	// Execute update without hitting the cluster
-	if err := dn.writeFiles(ignConfig.Storage.Files); err != nil {
+	if err := writeFiles(ignConfig.Storage.Files); err != nil {
 		return err
 	}
 	for _, unit := range ignConfig.Systemd.Units {

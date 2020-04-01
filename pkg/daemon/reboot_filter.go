@@ -250,7 +250,7 @@ func handleFilesChanges(changes []*FileChange) (err error) {
 		case changeCreated:
 			fallthrough
 		case changeUpdated:
-			err = writeFile(change.file)
+			err = writeFiles([]igntypes.File{change.file})
 		case changeDeleted:
 			err = deleteFile(change.name)
 		default:
