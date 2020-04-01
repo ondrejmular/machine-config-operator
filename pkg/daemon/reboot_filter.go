@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
-	"reflect"
+	// "reflect"
 
 	systemdDbus "github.com/coreos/go-systemd/dbus"
 	igntypes "github.com/coreos/ignition/config/v2_2/types"
@@ -239,8 +239,8 @@ func getFilesChanges(oldFilesConfig, newFilesConfig []igntypes.File) []*FileChan
 	}
 	for changeCandidate := range newFiles.Intersect(oldFiles).Iter() {
 		newFile := newFilesMap[changeCandidate.(string)]
-		// TODO: check against the state on the disk using checkFiles(...) function
-		if !reflect.DeepEqual(newFile, oldFilesMap[changeCandidate.(string)]) {
+		// if !reflect.DeepEqual(newFile, oldFilesMap[changeCandidate.(string)]) {
+		if !checkFiles([]igntypes.File{newFile}) {
 			changes = append(changes, &FileChange{
 				name:       changeCandidate.(string),
 				file:       newFile,
@@ -317,8 +317,8 @@ func getUnitsChanges(oldUnitsConfig, newUnitsConfig []igntypes.Unit) []*UnitChan
 		changedUnitName := changeCandidate.(string)
 		newUnit := newUnitsMap[changedUnitName]
 		oldUnit := oldUnitsMap[changedUnitName]
-		// TODO: check against the state on the disk, use checkUnits()
-		if !reflect.DeepEqual(newUnit, oldUnit) {
+		// if !reflect.DeepEqual(newUnit, oldUnit) {
+		if !checkUnits([]igntypes.Unit{newUnit}) {
 			changes = append(changes, &UnitChange{
 				name:       changedUnitName,
 				newUnit:    newUnit,
