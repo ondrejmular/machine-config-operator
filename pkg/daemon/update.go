@@ -303,9 +303,7 @@ func (dn *Daemon) update(oldConfig, newConfig *mcfgv1.MachineConfig) (retErr err
 
 	systemdConnection, dbusConnErr := systemdDbus.NewSystemConnection()
 	if dbusConnErr == nil {
-		defer func() {
-			systemdConnection.Close()
-		}()
+		defer systemdConnection.Close()
 	} else {
 		glog.Warningf("Unable to establish systemd dbus connection: %s", dbusConnErr)
 		// No more actions needed here as a systemd connection is not always
