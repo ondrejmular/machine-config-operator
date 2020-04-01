@@ -84,10 +84,17 @@ func (config AvoidRebootConfig) getFileAction(filePath string) PostUpdateAction 
 func (config AvoidRebootConfig) getUnitAction(unit igntypes.Unit, systemdConnection *systemdDbus.Conn) PostUpdateAction {
 	for _, entry := range config.Units {
 		if entry.name == unit.Name {
+			// same logic like in writeUnits()
+			enableUnit := false
+			if unit.Enable {
+				enableUnit = true
+			} else if unit.Enabled != nil {
+				enableUnit = *unit.Enabled
+			}
 			return SystemdAction{
 				unit.Name,
 				unitRestart,
-				unit.Enable,
+				enableUnit,
 				systemdConnection,
 				DrainRequired{drainRequired: entry.drainRequired},
 			}
@@ -173,7 +180,7 @@ func (action SystemdAction) Run() error {
 	case "done":
 		fallthrough
 	case "skipped":
-		glog.Infof("Systemd action successful")
+		glog.Infof("Systemd action successful: %s", output)
 	default:
 		return fmt.Errorf("Systemd action %s", output)
 	}
