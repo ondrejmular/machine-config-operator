@@ -834,95 +834,46 @@ func (dn *Daemon) switchKernel(oldConfig, newConfig *mcfgv1.MachineConfig) error
 	return nil
 }
 
-func deleteFile(filePath string) error {
-	if _, err := os.Stat(origFileName(filePath)); err == nil {
-		if err := os.Rename(origFileName(filePath), filePath); err != nil {
-			return err
-		}
-		glog.V(2).Infof("Restored file %q", filePath)
-	} else {
-		glog.V(2).Infof("Deleting stale config file: %s", filePath)
-		if err := os.Remove(filePath); err != nil {
-			newErr := fmt.Errorf("unable to delete %s: %s", filePath, err)
-			if !os.IsNotExist(err) {
-				return newErr
-			}
-			// otherwise, just warn
-			glog.Warningf("%v", newErr)
-		}
-		glog.Infof("Removed stale file %q", filePath)
-	}
-	return nil
-}
-
-func deleteUnit(unit *igntypes.Unit) error {
-	for j := range unit.Dropins {
-		path := filepath.Join(pathSystemd, unit.Name+".d", unit.Dropins[j].Name)
-		glog.V(2).Infof("Deleting systemd dropin file: %s", path)
-		if err := os.Remove(path); err != nil {
-			newErr := fmt.Errorf("unable to delete %s: %s", path, err)
-			if !os.IsNotExist(err) {
-				return newErr
-			}
-			// otherwise, just warn
-			glog.Warningf("%v", newErr)
-		}
-		glog.Infof("Removed systemd dropin %q", path)
-	}
-	path := filepath.Join(pathSystemd, unit.Name)
-	glog.V(2).Infof("Deleting systemd unit file: %s", path)
-	if err := os.Remove(path); err != nil {
-		newErr := fmt.Errorf("unable to delete %s: %s", path, err)
-		if !os.IsNotExist(err) {
-			return newErr
-		}
-		// otherwise, just warn
-		glog.Warningf("%v", newErr)
-	}
-	glog.Infof("Removed systemd unit %q", path)
-	return nil
-}
-
 func writeUnits(units []igntypes.Unit) error {
-	for _, unit := range units {
-		for i := range unit.Dropins {
-			glog.Infof("Writing systemd unit dropin %q", unit.Dropins[i].Name)
-			dpath := filepath.Join(pathSystemd, unit.Name+".d", unit.Dropins[i].Name)
-			if err := writeFileAtomicallyWithDefaults(dpath, []byte(unit.Dropins[i].Contents)); err != nil {
-				return fmt.Errorf("failed to write systemd unit dropin %q: %v", unit.Dropins[i].Name, err)
+	for _, u := range units {
+		for i := range u.Dropins {
+			glog.Infof("Writing systemd unit dropin %q", u.Dropins[i].Name)
+			dpath := filepath.Join(pathSystemd, u.Name+".d", u.Dropins[i].Name)
+			if err := writeFileAtomicallyWithDefaults(dpath, []byte(u.Dropins[i].Contents)); err != nil {
+				return fmt.Errorf("failed to write systemd unit dropin %q: %v", u.Dropins[i].Name, err)
 			}
 
 			glog.V(2).Infof("Wrote systemd unit dropin at %s", dpath)
 		}
 
-		fpath := filepath.Join(pathSystemd, unit.Name)
+		fpath := filepath.Join(pathSystemd, u.Name)
 
 		// check if the unit is masked. if it is, we write a symlink to
 		// /dev/null and continue
-		if unit.Mask {
+		if u.Mask {
 			glog.V(2).Info("Systemd unit masked")
 			if err := os.RemoveAll(fpath); err != nil {
-				return fmt.Errorf("failed to remove unit %q: %v", unit.Name, err)
+				return fmt.Errorf("failed to remove unit %q: %v", u.Name, err)
 			}
-			glog.V(2).Infof("Removed unit %q", unit.Name)
+			glog.V(2).Infof("Removed unit %q", u.Name)
 
 			if err := renameio.Symlink(pathDevNull, fpath); err != nil {
-				return fmt.Errorf("failed to symlink unit %q to %s: %v", unit.Name, pathDevNull, err)
+				return fmt.Errorf("failed to symlink unit %q to %s: %v", u.Name, pathDevNull, err)
 			}
-			glog.V(2).Infof("Created symlink unit %q to %s", unit.Name, pathDevNull)
+			glog.V(2).Infof("Created symlink unit %q to %s", u.Name, pathDevNull)
 
-			return nil
+			continue
 		}
 
-		if unit.Contents != "" {
-			glog.Infof("Writing systemd unit %q", unit.Name)
+		if u.Contents != "" {
+			glog.Infof("Writing systemd unit %q", u.Name)
 
 			// write the unit to disk
-			if err := writeFileAtomicallyWithDefaults(fpath, []byte(unit.Contents)); err != nil {
-				return fmt.Errorf("failed to write systemd unit %q: %v", unit.Name, err)
+			if err := writeFileAtomicallyWithDefaults(fpath, []byte(u.Contents)); err != nil {
+				return fmt.Errorf("failed to write systemd unit %q: %v", u.Name, err)
 			}
 
-			glog.V(2).Infof("Successfully wrote systemd unit %q: ", unit.Name)
+			glog.V(2).Infof("Successfully wrote systemd unit %q: ", u.Name)
 		}
 
 		// if the unit doesn't note if it should be enabled or disabled then
@@ -932,24 +883,24 @@ func writeUnits(units []igntypes.Unit) error {
 		// disabled. even if the unit wasn't previously enabled the result will
 		// be fine as disableUnit is idempotent.
 		// Note: we have to check for legacy unit.Enable and honor it
-		glog.Infof("Enabling systemd unit %q", unit.Name)
-		if unit.Enable {
-			if err := enableUnit(unit); err != nil {
+		glog.Infof("Enabling systemd unit %q", u.Name)
+		if u.Enable {
+			if err := enableUnit(u); err != nil {
 				return err
 			}
-			glog.V(2).Infof("Enabled systemd unit %q", unit.Name)
+			glog.V(2).Infof("Enabled systemd unit %q", u.Name)
 		}
-		if unit.Enabled != nil {
-			if *unit.Enabled {
-				if err := enableUnit(unit); err != nil {
+		if u.Enabled != nil {
+			if *u.Enabled {
+				if err := enableUnit(u); err != nil {
 					return err
 				}
-				glog.V(2).Infof("Enabled systemd unit %q", unit.Name)
+				glog.V(2).Infof("Enabled systemd unit %q", u.Name)
 			} else {
-				if err := disableUnit(unit); err != nil {
+				if err := disableUnit(u); err != nil {
 					return err
 				}
-				glog.V(2).Infof("Disabled systemd unit %q", unit.Name)
+				glog.V(2).Infof("Disabled systemd unit %q", u.Name)
 			}
 		}
 	}
@@ -1011,17 +962,65 @@ func writeFiles(files []igntypes.File) error {
 		if file.User != nil || file.Group != nil {
 			uid, gid, err = getFileOwnership(file)
 			if err != nil {
-				err = fmt.Errorf("failed to retrieve file ownership for file %q: %v", file.Path, err)
-				return err
+				return fmt.Errorf("failed to retrieve file ownership for file %q: %v", file.Path, err)
 			}
 		}
-		if err = createOrigFile(file.Path); err != nil {
+		if err := createOrigFile(file.Path); err != nil {
 			return err
 		}
-		if err = writeFileAtomically(file.Path, contents.Data, defaultDirectoryPermissions, mode, uid, gid); err != nil {
+		if err := writeFileAtomically(file.Path, contents.Data, defaultDirectoryPermissions, mode, uid, gid); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+func deleteFile(filePath string) error {
+	if _, err := os.Stat(origFileName(filePath)); err == nil {
+		if err := os.Rename(origFileName(filePath), filePath); err != nil {
+			return err
+		}
+		glog.V(2).Infof("Restored file %q", filePath)
+	} else {
+		glog.V(2).Infof("Deleting stale config file: %s", filePath)
+		if err := os.Remove(filePath); err != nil {
+			newErr := fmt.Errorf("unable to delete %s: %s", filePath, err)
+			if !os.IsNotExist(err) {
+				return newErr
+			}
+			// otherwise, just warn
+			glog.Warningf("%v", newErr)
+		}
+		glog.Infof("Removed stale file %q", filePath)
+	}
+	return nil
+}
+
+func deleteUnit(unit *igntypes.Unit) error {
+	for j := range unit.Dropins {
+		path := filepath.Join(pathSystemd, unit.Name+".d", unit.Dropins[j].Name)
+		glog.V(2).Infof("Deleting systemd dropin file: %s", path)
+		if err := os.Remove(path); err != nil {
+			newErr := fmt.Errorf("unable to delete %s: %s", path, err)
+			if !os.IsNotExist(err) {
+				return newErr
+			}
+			// otherwise, just warn
+			glog.Warningf("%v", newErr)
+		}
+		glog.Infof("Removed systemd dropin %q", path)
+	}
+	path := filepath.Join(pathSystemd, unit.Name)
+	glog.V(2).Infof("Deleting systemd unit file: %s", path)
+	if err := os.Remove(path); err != nil {
+		newErr := fmt.Errorf("unable to delete %s: %s", path, err)
+		if !os.IsNotExist(err) {
+			return newErr
+		}
+		// otherwise, just warn
+		glog.Warningf("%v", newErr)
+	}
+	glog.Infof("Removed systemd unit %q", path)
 	return nil
 }
 
