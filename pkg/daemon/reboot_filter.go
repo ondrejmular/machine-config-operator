@@ -333,14 +333,14 @@ func handleUnitsChanges(changes []*UnitChange) (err error) {
 	for _, change := range changes {
 		switch change.changeType {
 		case changeCreated:
-			err = createUnit(&change.newUnit)
+			err = writeUnits([]igntypes.Unit{change.newUnit})
 		case changeUpdated:
 			err = deleteUnit(&change.oldUnit)
 			if err != nil {
 				// TODO: try to write it back or do it in roll-back?
 				return
 			}
-			err = createUnit(&change.newUnit)
+			err = writeUnits([]igntypes.Unit{change.newUnit})
 		case changeDeleted:
 			err = deleteUnit(&change.oldUnit)
 		default:

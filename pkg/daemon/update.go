@@ -883,72 +883,74 @@ func deleteUnit(unit *igntypes.Unit) error {
 	return nil
 }
 
-func createUnit(unit *igntypes.Unit) error {
-	for i := range unit.Dropins {
-		glog.Infof("Writing systemd unit dropin %q", unit.Dropins[i].Name)
-		dpath := filepath.Join(pathSystemd, unit.Name+".d", unit.Dropins[i].Name)
-		if err := writeFileAtomicallyWithDefaults(dpath, []byte(unit.Dropins[i].Contents)); err != nil {
-			return fmt.Errorf("failed to write systemd unit dropin %q: %v", unit.Dropins[i].Name, err)
+func writeUnits(units []igntypes.Unit) error {
+	for _, unit := range units {
+		for i := range unit.Dropins {
+			glog.Infof("Writing systemd unit dropin %q", unit.Dropins[i].Name)
+			dpath := filepath.Join(pathSystemd, unit.Name+".d", unit.Dropins[i].Name)
+			if err := writeFileAtomicallyWithDefaults(dpath, []byte(unit.Dropins[i].Contents)); err != nil {
+				return fmt.Errorf("failed to write systemd unit dropin %q: %v", unit.Dropins[i].Name, err)
+			}
+
+			glog.V(2).Infof("Wrote systemd unit dropin at %s", dpath)
 		}
 
-		glog.V(2).Infof("Wrote systemd unit dropin at %s", dpath)
-	}
+		fpath := filepath.Join(pathSystemd, unit.Name)
 
-	fpath := filepath.Join(pathSystemd, unit.Name)
+		// check if the unit is masked. if it is, we write a symlink to
+		// /dev/null and continue
+		if unit.Mask {
+			glog.V(2).Info("Systemd unit masked")
+			if err := os.RemoveAll(fpath); err != nil {
+				return fmt.Errorf("failed to remove unit %q: %v", unit.Name, err)
+			}
+			glog.V(2).Infof("Removed unit %q", unit.Name)
 
-	// check if the unit is masked. if it is, we write a symlink to
-	// /dev/null and continue
-	if unit.Mask {
-		glog.V(2).Info("Systemd unit masked")
-		if err := os.RemoveAll(fpath); err != nil {
-			return fmt.Errorf("failed to remove unit %q: %v", unit.Name, err)
-		}
-		glog.V(2).Infof("Removed unit %q", unit.Name)
+			if err := renameio.Symlink(pathDevNull, fpath); err != nil {
+				return fmt.Errorf("failed to symlink unit %q to %s: %v", unit.Name, pathDevNull, err)
+			}
+			glog.V(2).Infof("Created symlink unit %q to %s", unit.Name, pathDevNull)
 
-		if err := renameio.Symlink(pathDevNull, fpath); err != nil {
-			return fmt.Errorf("failed to symlink unit %q to %s: %v", unit.Name, pathDevNull, err)
-		}
-		glog.V(2).Infof("Created symlink unit %q to %s", unit.Name, pathDevNull)
-
-		return nil
-	}
-
-	if unit.Contents != "" {
-		glog.Infof("Writing systemd unit %q", unit.Name)
-
-		// write the unit to disk
-		if err := writeFileAtomicallyWithDefaults(fpath, []byte(unit.Contents)); err != nil {
-			return fmt.Errorf("failed to write systemd unit %q: %v", unit.Name, err)
+			return nil
 		}
 
-		glog.V(2).Infof("Successfully wrote systemd unit %q: ", unit.Name)
-	}
+		if unit.Contents != "" {
+			glog.Infof("Writing systemd unit %q", unit.Name)
 
-	// if the unit doesn't note if it should be enabled or disabled then
-	// skip all linking.
-	// if the unit should be enabled, then enable it.
-	// otherwise the unit is disabled. run disableUnit to ensure the unit is
-	// disabled. even if the unit wasn't previously enabled the result will
-	// be fine as disableUnit is idempotent.
-	// Note: we have to check for legacy unit.Enable and honor it
-	glog.Infof("Enabling systemd unit %q", unit.Name)
-	if unit.Enable {
-		if err := enableUnit(*unit); err != nil {
-			return err
+			// write the unit to disk
+			if err := writeFileAtomicallyWithDefaults(fpath, []byte(unit.Contents)); err != nil {
+				return fmt.Errorf("failed to write systemd unit %q: %v", unit.Name, err)
+			}
+
+			glog.V(2).Infof("Successfully wrote systemd unit %q: ", unit.Name)
 		}
-		glog.V(2).Infof("Enabled systemd unit %q", unit.Name)
-	}
-	if unit.Enabled != nil {
-		if *unit.Enabled {
-			if err := enableUnit(*unit); err != nil {
+
+		// if the unit doesn't note if it should be enabled or disabled then
+		// skip all linking.
+		// if the unit should be enabled, then enable it.
+		// otherwise the unit is disabled. run disableUnit to ensure the unit is
+		// disabled. even if the unit wasn't previously enabled the result will
+		// be fine as disableUnit is idempotent.
+		// Note: we have to check for legacy unit.Enable and honor it
+		glog.Infof("Enabling systemd unit %q", unit.Name)
+		if unit.Enable {
+			if err := enableUnit(unit); err != nil {
 				return err
 			}
 			glog.V(2).Infof("Enabled systemd unit %q", unit.Name)
-		} else {
-			if err := disableUnit(*unit); err != nil {
-				return err
+		}
+		if unit.Enabled != nil {
+			if *unit.Enabled {
+				if err := enableUnit(unit); err != nil {
+					return err
+				}
+				glog.V(2).Infof("Enabled systemd unit %q", unit.Name)
+			} else {
+				if err := disableUnit(unit); err != nil {
+					return err
+				}
+				glog.V(2).Infof("Disabled systemd unit %q", unit.Name)
 			}
-			glog.V(2).Infof("Disabled systemd unit %q", unit.Name)
 		}
 	}
 	return nil
