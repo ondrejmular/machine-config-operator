@@ -81,12 +81,13 @@ func (config AvoidRebootConfig) getFileAction(filePath string) PostUpdateAction 
 	return nil
 }
 
-func (config AvoidRebootConfig) getUnitAction(unitName string, systemdConnection *systemdDbus.Conn) PostUpdateAction {
+func (config AvoidRebootConfig) getUnitAction(unit igntypes.Unit, systemdConnection *systemdDbus.Conn) PostUpdateAction {
 	for _, entry := range config.Units {
-		if entry.name == unitName {
+		if entry.name == unit.Name {
 			return SystemdAction{
-				unitName,
+				unit.Name,
 				unitRestart,
+				unit.Enable,
 				systemdConnection,
 				DrainRequired{drainRequired: entry.drainRequired},
 			}
@@ -140,28 +141,41 @@ const (
 type SystemdAction struct {
 	unitName          string
 	operation         UnitOperation
+	enabled           bool
 	systemdConnection *systemdDbus.Conn
 	DrainRequired
 }
 
 func (action SystemdAction) Run() error {
-	glog.Warningf(
-		"Systemd post update action not implemented! Unit: %s; Operation: %s",
-		action.unitName,
-		action.operation,
-	)
+	// TODO: add support for reload operation
+	// For now only restart operation is supported
 	if action.systemdConnection == nil {
 		return fmt.Errorf(
 			"Unable to run post update action for unit %q: systemd dbus connection not specified",
 			action.unitName,
 		)
 	}
-	units, err := action.systemdConnection.ListUnitFiles()
-	if err != nil {
-		return fmt.Errorf("Error while running systemd action: %s", err)
+	var err error
+	outputChannel := make(chan string)
+	if action.enabled {
+		glog.Infof("Restarting unit %q", action.unitName)
+		_, err = action.systemdConnection.RestartUnit(action.unitName, "replace", outputChannel)
+	} else {
+		glog.Infof("Stopping unit %q", action.unitName)
+		_, err = action.systemdConnection.StopUnit(action.unitName, "replace", outputChannel)
 	}
-	for _, unit := range units {
-		glog.Infof("Unit file: %s; type: %s", unit.Path, unit.Type)
+	if err != nil {
+		return fmt.Errorf("Running systemd action failed: %s", err)
+	}
+	output := <-outputChannel
+
+	switch output {
+	case "done":
+		fallthrough
+	case "skipped":
+		glog.Infof("Systemd action successful")
+	default:
+		return fmt.Errorf("Systemd action %s", output)
 	}
 	return nil
 }
@@ -368,7 +382,7 @@ func getPostUpdateActions(filesChanges []*FileChange, unitsChanges []*UnitChange
 		case changeCreated:
 			fallthrough
 		case changeUpdated:
-			action := filterConfig.getUnitAction(change.name, systemdConnection)
+			action := filterConfig.getUnitAction(change.newUnit, systemdConnection)
 			if action == nil {
 				err := fmt.Errorf("No action found for unit %q", change.name)
 				glog.Infof("%s%s", err, rebootRequiredMsg)
