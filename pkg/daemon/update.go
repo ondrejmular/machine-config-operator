@@ -834,8 +834,43 @@ func (dn *Daemon) switchKernel(oldConfig, newConfig *mcfgv1.MachineConfig) error
 	return nil
 }
 
+// enableUnit enables a systemd unit via symlink
+func enableUnit(unit igntypes.Unit) error {
+	// The link location
+	wantsPath := filepath.Join(wantsPathSystemd, unit.Name)
+	// sanity check that we don't return an error when the link already exists
+	if _, err := os.Stat(wantsPath); err == nil {
+		glog.Infof("%s already exists. Not making a new symlink", wantsPath)
+		return nil
+	}
+	// The originating file to link
+	servicePath := filepath.Join(pathSystemd, unit.Name)
+	err := renameio.Symlink(servicePath, wantsPath)
+	if err != nil {
+		return err
+	}
+	glog.Infof("Enabled %s", unit.Name)
+	glog.V(2).Infof("Symlinked %s to %s", servicePath, wantsPath)
+	return nil
+}
+
+// disableUnit disables a systemd unit via symlink removal
+func disableUnit(unit igntypes.Unit) error {
+	// The link location
+	wantsPath := filepath.Join(wantsPathSystemd, unit.Name)
+	// sanity check so we don't return an error when the unit was already disabled
+	if _, err := os.Stat(wantsPath); err != nil {
+		glog.Infof("%s was not present. No need to remove", wantsPath)
+		return nil
+	}
+	glog.V(2).Infof("Disabling unit at %s", wantsPath)
+
+	return os.Remove(wantsPath)
+}
+
 func writeUnits(units []igntypes.Unit) error {
 	for _, u := range units {
+		// write the dropin to disk
 		for i := range u.Dropins {
 			glog.Infof("Writing systemd unit dropin %q", u.Dropins[i].Name)
 			dpath := filepath.Join(pathSystemd, u.Name+".d", u.Dropins[i].Name)
@@ -905,40 +940,6 @@ func writeUnits(units []igntypes.Unit) error {
 		}
 	}
 	return nil
-}
-
-// enableUnit enables a systemd unit via symlink
-func enableUnit(unit igntypes.Unit) error {
-	// The link location
-	wantsPath := filepath.Join(wantsPathSystemd, unit.Name)
-	// sanity check that we don't return an error when the link already exists
-	if _, err := os.Stat(wantsPath); err == nil {
-		glog.Infof("%s already exists. Not making a new symlink", wantsPath)
-		return nil
-	}
-	// The originating file to link
-	servicePath := filepath.Join(pathSystemd, unit.Name)
-	err := renameio.Symlink(servicePath, wantsPath)
-	if err != nil {
-		return err
-	}
-	glog.Infof("Enabled %s", unit.Name)
-	glog.V(2).Infof("Symlinked %s to %s", servicePath, wantsPath)
-	return nil
-}
-
-// disableUnit disables a systemd unit via symlink removal
-func disableUnit(unit igntypes.Unit) error {
-	// The link location
-	wantsPath := filepath.Join(wantsPathSystemd, unit.Name)
-	// sanity check so we don't return an error when the unit was already disabled
-	if _, err := os.Stat(wantsPath); err != nil {
-		glog.Infof("%s was not present. No need to remove", wantsPath)
-		return nil
-	}
-	glog.V(2).Infof("Disabling unit at %s", wantsPath)
-
-	return os.Remove(wantsPath)
 }
 
 // writeFiles writes the given files to disk.
